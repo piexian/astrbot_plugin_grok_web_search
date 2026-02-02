@@ -13,6 +13,8 @@ from pathlib import Path
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
+from astrbot.core.provider.entities import ProviderRequest
+from astrbot.core.star.star_tools import FunctionToolManager
 
 from .grok_client import (
     grok_search,
@@ -285,12 +287,22 @@ class GrokSearchPlugin(Star):
         Args:
             query(string): 搜索查询内容，应该是清晰具体的问题或关键词
         """
-        # 启用 Skill 时禁用 Tool，避免重复
-        if self.config.get("enable_skill", False):
-            return "此工具已禁用，请使用 Skill 脚本进行搜索"
-
         result = await self._do_search(query)
         return self._format_result_for_llm(result)
+
+    @filter.on_llm_request()
+    async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+        """在 LLM 请求时，如果启用了 Skill 则移除 grok_web_search 工具"""
+        if not self.config.get("enable_skill", False):
+            return
+
+        tool_set = req.func_tool
+        if isinstance(tool_set, FunctionToolManager):
+            req.func_tool = tool_set.get_full_tool_set()
+            tool_set = req.func_tool
+
+        if tool_set:
+            tool_set.remove_tool("grok_web_search")
 
     async def terminate(self):
         """插件销毁"""
