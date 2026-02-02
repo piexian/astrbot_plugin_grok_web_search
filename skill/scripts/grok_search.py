@@ -196,7 +196,8 @@ def _request_chat_completions(
         "You are a web research assistant. Use live web search/browsing when answering. "
         "Return ONLY a single JSON object with keys: "
         "content (string), sources (array of objects with url/title/snippet when possible). "
-        "Keep content concise and evidence-backed."
+        "Keep content concise and evidence-backed. "
+        "IMPORTANT: Do NOT use Markdown formatting in the content field - use plain text only."
     )
 
     body: dict[str, Any] = {
