@@ -99,6 +99,10 @@ astrbot_plugin_grok_web_search/
 - [AstrBot 插件开发文档](https://docs.astrbot.app/dev/star/plugin-new.html)
 - [Issues](https://github.com/piexian/astrbot_plugin_grok_web_search/issues)
 
+## 🔗 相关链接
+- [AstrBot](https://docs.astrbot.app/)
+- [grok2api](https://github.com/chenyme/grok2api) 
+
 ## 许可
 
 AGPL-3.0 License
