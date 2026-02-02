@@ -45,5 +45,10 @@
     "type": "bool",
     "description": "是否安装 Skill 到 skills 目录（启用后将禁用 LLM Tool）",
     "default": false
+  },
+  "reuse_session": {
+    "type": "bool",
+    "description": "是否复用 HTTP 会话（高频调用场景可开启以减少连接开销）",
+    "default": false
   }
 }

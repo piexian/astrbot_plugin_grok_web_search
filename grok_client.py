@@ -75,19 +75,19 @@ def _extract_urls(text: str) -> list[str]:
     return out
 
 
-def parse_json_config(value: str) -> dict[str, Any]:
-    """解析 JSON 配置字符串，解析失败返回空字典并记录警告"""
+def parse_json_config(value: str) -> tuple[dict[str, Any], str | None]:
+    """解析 JSON 配置字符串
+
+    Returns:
+        (parsed_dict, error_message): 解析结果和错误信息，无错误时 error_message 为 None
+    """
     if not value or not value.strip():
-        return {}
+        return {}, None
     try:
         parsed = json.loads(value)
-        return parsed if isinstance(parsed, dict) else {}
+        return (parsed if isinstance(parsed, dict) else {}, None)
     except json.JSONDecodeError as e:
-        # 静默返回空字典，但可通过日志排查
-        import sys
-
-        print(f"[grok_client] JSON 配置解析失败: {e}", file=sys.stderr)
-        return {}
+        return {}, f"JSON 配置解析失败: {e}"
 
 
 async def grok_search(
@@ -98,6 +98,7 @@ async def grok_search(
     timeout: float = 60.0,
     extra_body: dict | None = None,
     extra_headers: dict | None = None,
+    session: aiohttp.ClientSession | None = None,
 ) -> dict[str, Any]:
     """
     调用 Grok API 进行联网搜索（异步）
@@ -110,6 +111,7 @@ async def grok_search(
         timeout: 超时时间（秒）
         extra_body: 额外请求体参数
         extra_headers: 额外请求头
+        session: 可选的 aiohttp.ClientSession，传入时复用，否则创建临时 session
 
     Returns:
         {
@@ -130,7 +132,7 @@ async def grok_search(
     if not base_url:
         return {
             "ok": False,
-            "error": "missing_base_url",
+            "error": "缺少 base_url 配置，请在插件设置中填写 Grok API 端点",
             "content": "",
             "sources": [],
             "raw": "",
@@ -140,7 +142,7 @@ async def grok_search(
     if not api_key:
         return {
             "ok": False,
-            "error": "missing_api_key",
+            "error": "缺少 api_key 配置，请在插件设置中填写 API 密钥",
             "content": "",
             "sources": [],
             "raw": "",
@@ -167,54 +169,88 @@ async def grok_search(
         "stream": False,
     }
     if extra_body:
-        body.update(extra_body)
+        # 保护关键字段不被覆盖
+        protected_keys = {"model", "messages", "stream"}
+        for key, value in extra_body.items():
+            if key not in protected_keys:
+                body[key] = value
 
     headers: dict[str, str] = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
     if extra_headers:
+        # 保护关键请求头不被覆盖
+        protected_headers = {"authorization", "content-type"}
         for key, value in extra_headers.items():
-            headers[str(key)] = str(value)
+            if str(key).lower() not in protected_headers:
+                headers[str(key)] = str(value)
+
+    async def _do_request(
+        s: aiohttp.ClientSession,
+    ) -> dict[str, Any]:
+        async with s.post(
+            url,
+            json=body,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as resp:
+            if resp.status != 200:
+                error_text = await resp.text()
+                # 友好的错误提示
+                error_hints = {
+                    400: "请求格式错误，请检查 extra_body 配置",
+                    401: "认证失败，请检查 api_key 是否正确",
+                    403: "访问被拒绝，请检查 API 权限",
+                    404: "API 端点不存在，请检查 base_url 配置",
+                    429: "请求过于频繁，请稍后重试",
+                    500: "服务器内部错误",
+                    502: "网关错误，API 服务可能暂时不可用",
+                    503: "服务暂时不可用，请稍后重试",
+                }
+                hint = error_hints.get(resp.status, "")
+                error_msg = f"HTTP {resp.status}"
+                if hint:
+                    error_msg = f"{error_msg} - {hint}"
+                return {
+                    "ok": False,
+                    "error": error_msg,
+                    "content": "",
+                    "sources": [],
+                    "raw": error_text[:2000] if error_text else "",
+                    "elapsed_ms": int((time.time() - started) * 1000),
+                }
+
+            # 尝试解析 JSON 响应
+            try:
+                return {"ok": True, "data": await resp.json()}
+            except (aiohttp.ContentTypeError, json.JSONDecodeError) as e:
+                raw_text = await resp.text()
+                return {
+                    "ok": False,
+                    "error": "响应解析失败，API 返回了非 JSON 格式的数据",
+                    "content": str(e),
+                    "sources": [],
+                    "raw": raw_text[:2000] if raw_text else "",
+                    "elapsed_ms": int((time.time() - started) * 1000),
+                }
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                json=body,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=timeout),
-            ) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    return {
-                        "ok": False,
-                        "error": f"HTTP {resp.status}",
-                        "content": "",
-                        "sources": [],
-                        "raw": error_text[:2000] if error_text else "",
-                        "elapsed_ms": int((time.time() - started) * 1000),
-                    }
+        if session is not None:
+            result = await _do_request(session)
+        else:
+            async with aiohttp.ClientSession() as temp_session:
+                result = await _do_request(temp_session)
 
-                # 尝试解析 JSON 响应
-                try:
-                    data = await resp.json()
-                except (aiohttp.ContentTypeError, json.JSONDecodeError) as e:
-                    raw_text = await resp.text()
-                    return {
-                        "ok": False,
-                        "error": "invalid_json_response",
-                        "content": str(e),
-                        "sources": [],
-                        "raw": raw_text[:2000] if raw_text else "",
-                        "elapsed_ms": int((time.time() - started) * 1000),
-                    }
+        if not result.get("ok") or "data" not in result:
+            return result
+        data = result["data"]
 
     except aiohttp.ClientError as e:
         return {
             "ok": False,
-            "error": "request_failed",
-            "content": str(e),
+            "error": f"网络请求失败: {e}",
+            "content": "",
             "sources": [],
             "raw": "",
             "elapsed_ms": int((time.time() - started) * 1000),
@@ -222,7 +258,7 @@ async def grok_search(
     except TimeoutError:
         return {
             "ok": False,
-            "error": "timeout",
+            "error": f"请求超时（{timeout}秒），请检查网络或增加 timeout_seconds 配置",
             "content": "",
             "sources": [],
             "raw": "",
@@ -231,6 +267,7 @@ async def grok_search(
 
     # 解析响应
     message = ""
+    parse_error = ""
     try:
         # 检查 API 错误响应
         if "error" in data and isinstance(data.get("error"), (dict, str)):
@@ -242,24 +279,31 @@ async def grok_search(
             )
             return {
                 "ok": False,
-                "error": "api_error",
-                "content": error_msg,
+                "error": f"API 返回错误: {error_msg}",
+                "content": "",
                 "sources": [],
                 "raw": json.dumps(data, ensure_ascii=False)[:2000],
                 "elapsed_ms": int((time.time() - started) * 1000),
             }
 
-        choice0 = (data.get("choices") or [{}])[0]
-        msg = choice0.get("message") or {}
-        message = msg.get("content") or ""
-    except Exception:
-        message = ""
+        choices = data.get("choices")
+        if not choices or not isinstance(choices, list):
+            parse_error = f"响应缺少 choices 字段或格式异常: {type(choices).__name__}"
+        else:
+            choice0 = choices[0] if choices else {}
+            msg = choice0.get("message") or {}
+            message = msg.get("content") or ""
+            if not message:
+                parse_error = "choices[0].message.content 为空"
+    except (KeyError, IndexError, TypeError) as e:
+        parse_error = f"响应结构解析失败: {type(e).__name__}: {e}"
 
     # 响应为空时返回失败
     if not message:
+        error_detail = parse_error or "API 返回了空响应"
         return {
             "ok": False,
-            "error": "empty_response",
+            "error": f"{error_detail}，请稍后重试",
             "content": "",
             "sources": [],
             "raw": json.dumps(data, ensure_ascii=False)[:2000] if data else "",

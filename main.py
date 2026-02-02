@@ -10,6 +10,8 @@ AstrBot 插件：Grok 联网搜索
 import shutil
 from pathlib import Path
 
+import aiohttp
+
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
@@ -30,10 +32,15 @@ class GrokSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self.config = config or {}
+        self._session: aiohttp.ClientSession | None = None
 
     async def initialize(self):
         """插件初始化：验证配置并处理 Skill 安装"""
         self._validate_config()
+
+        # 根据配置决定是否创建复用的 HTTP 会话
+        if self.config.get("reuse_session", False):
+            self._session = aiohttp.ClientSession()
 
         # 首次安装：将插件目录的 skill 移动到持久化目录
         self._migrate_skill_to_persistent()
@@ -161,7 +168,10 @@ class GrokSearchPlugin(Star):
         if isinstance(value, dict):
             return value
         if isinstance(value, str):
-            return parse_json_config(value)
+            result, error = parse_json_config(value)
+            if error:
+                logger.warning(f"[{PLUGIN_NAME}] {key} {error}")
+            return result
         return {}
 
     async def _do_search(self, query: str) -> dict:
@@ -183,6 +193,7 @@ class GrokSearchPlugin(Star):
             timeout=timeout,
             extra_body=self._parse_json_config("extra_body"),
             extra_headers=self._parse_json_config("extra_headers"),
+            session=self._session,
         )
 
     def _format_result(self, result: dict) -> str:
@@ -305,5 +316,7 @@ class GrokSearchPlugin(Star):
             tool_set.remove_tool("grok_web_search")
 
     async def terminate(self):
-        """插件销毁"""
-        pass
+        """插件销毁：关闭 HTTP 会话"""
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None

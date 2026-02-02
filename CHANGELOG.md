@@ -2,15 +2,31 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [1.0.2] - 2026-02-02
+## [1.0.3] - 2026-02-02
+
+### Added
+- 新增 `reuse_session` 配置项：复用 HTTP 会话，高频调用场景可开启以减少连接开销（默认关闭）
 
 ### Changed
-- 启用 Skill 时自动禁用 LLM Tool，避免 AI 重复调用
+- `parse_json_config()` 不再直接输出到 stderr，改为返回错误信息由调用方通过 logger 记录
+- `grok_search()` 支持传入外部 `aiohttp.ClientSession` 以复用连接
+- 所有错误信息改为中文友好提示，包含具体原因和解决建议
+- 异常处理细化：捕获具体异常类型，记录详细解析失败原因
+
+### Fixed
+- 修复 JSON 配置解析失败时日志绕过 AstrBot logger 的问题
+
+### Security
+- `extra_body` 保护关键字段（`model`、`messages`、`stream`）不被覆盖
+- `extra_headers` 保护关键请求头（`Authorization`、`Content-Type`）不被覆盖
 
 <details>
 <summary>历史版本</summary>
 
-## [1.0.1] - 2026-02-02
+## [1.0.2] - 2026-02-02
+
+### Changed
+- 启用 Skill 时自动禁用 LLM Tool，避免 AI 重复调用
 
 ### Added
 - 新增 `show_sources` 配置项：控制是否显示来源 URL（默认关闭）

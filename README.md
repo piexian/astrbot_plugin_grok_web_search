@@ -34,6 +34,7 @@
 | `extra_body` | JSON | 否 | 额外请求体参数 |
 | `extra_headers` | JSON | 否 | 额外请求头 |
 | `enable_skill` | bool | 否 | 是否安装 Skill 到 skills 目录（启用后将禁用 LLM Tool） |
+| `reuse_session` | bool | 否 | 是否复用 HTTP 会话（高频调用场景可开启，默认: false） |
 
 ## 使用
 
