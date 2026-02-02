@@ -1,7 +1,12 @@
 ---
 name: grok-search
 description: Real-time web research/search via Grok API (outputs JSON with content and sources).
+disable_tools: true
 ---
+
+## Important
+
+**使用此 Skill 时必须禁用工具调用**，否则 AI 会直接调用 `grok_web_search` 工具而非执行脚本。
 
 ## When to use
 

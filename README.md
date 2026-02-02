@@ -33,7 +33,7 @@
 | `max_sources` | int | 否 | 最大返回来源数量，0 表示不限制（默认: 5） |
 | `extra_body` | JSON | 否 | 额外请求体参数 |
 | `extra_headers` | JSON | 否 | 额外请求头 |
-| `enable_skill` | bool | 否 | 是否安装 Skill 到 skills 目录 |
+| `enable_skill` | bool | 否 | 是否安装 Skill 到 skills 目录（启用后将禁用 LLM Tool） |
 
 ## 使用
 

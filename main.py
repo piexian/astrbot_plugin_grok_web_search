@@ -12,7 +12,7 @@ from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 
 from .grok_client import (
     grok_search,
@@ -22,16 +22,8 @@ from .grok_client import (
 )
 
 PLUGIN_NAME = "astrbot_plugin_grok_web_search"
-PLUGIN_VERSION = "1.0.1"
 
 
-@register(
-    PLUGIN_NAME,
-    "piexian",
-    "通过 Grok API 进行实时联网搜索，返回综合答案和来源链接，支持指令、LLM Tool 和 Skills",
-    PLUGIN_VERSION,
-    "https://github.com/piexian/astrbot_plugin_grok_web_search",
-)
 class GrokSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -293,6 +285,10 @@ class GrokSearchPlugin(Star):
         Args:
             query(string): 搜索查询内容，应该是清晰具体的问题或关键词
         """
+        # 启用 Skill 时禁用 Tool，避免重复
+        if self.config.get("enable_skill", False):
+            return "此工具已禁用，请使用 Skill 脚本进行搜索"
+
         result = await self._do_search(query)
         return self._format_result_for_llm(result)
 

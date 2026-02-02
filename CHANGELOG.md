@@ -2,6 +2,14 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.0.2] - 2026-02-02
+
+### Changed
+- 启用 Skill 时自动禁用 LLM Tool，避免 AI 重复调用
+
+<details>
+<summary>历史版本</summary>
+
 ## [1.0.1] - 2026-02-02
 
 ### Added
@@ -11,9 +19,6 @@
 ### Changed
 - LLM Tool 返回结果改为纯文本格式（无 Markdown）
 - Grok 提示词添加禁止返回 Markdown 格式的要求
-
-<details>
-<summary>历史版本</summary>
 
 ## [1.0.0] - 2026-02-02
 

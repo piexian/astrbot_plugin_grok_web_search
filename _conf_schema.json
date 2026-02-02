@@ -43,7 +43,7 @@
   },
   "enable_skill": {
     "type": "bool",
-    "description": "是否安装 Skill 到 skills 目录（供 LLM 脚本调用）",
+    "description": "是否安装 Skill 到 skills 目录（启用后将禁用 LLM Tool）",
     "default": false
   }
 }
