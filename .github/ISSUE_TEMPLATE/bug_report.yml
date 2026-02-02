@@ -1,0 +1,91 @@
+name: Bug 报告
+description: 报告一个 Bug
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你提交 Bug 报告！请尽可能详细地填写以下信息，以便我们快速定位和解决问题。
+
+  - type: input
+    id: astrbot-version
+    attributes:
+      label: AstrBot 版本号
+      description: 请填写你使用的 AstrBot 版本
+      placeholder: "例如: v4.5.0"
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本号
+      description: 请填写 Grok 联网搜索插件版本
+      placeholder: "例如: v1.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: 部署环境
+      description: 你的运行环境是什么？
+      options:
+        - Docker
+        - Linux (直接部署)
+        - Windows
+        - macOS
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+      description: 请详细描述你遇到的问题
+      placeholder: 发生了什么？你期望的行为是什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 如何复现这个问题？
+      placeholder: |
+        1. 执行 /grok ...
+        2. 观察到 ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 报错日志
+      description: 请粘贴相关的错误日志（可在 AstrBot 日志中查看）
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: 相关配置
+      description: 如果与配置相关，请提供配置信息（注意隐藏敏感信息如 API Key）
+      render: json
+    validations:
+      required: false
+
+  - type: dropdown
+    id: pr
+    attributes:
+      label: 是否愿意提交 PR 修复？
+      description: 如果你知道如何修复这个问题，欢迎提交 PR！
+      options:
+        - 愿意
+        - 不确定，需要指导
+        - 暂时没有时间
+    validations:
+      required: true
