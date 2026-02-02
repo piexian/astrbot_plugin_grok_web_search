@@ -1,46 +1,39 @@
-[
-  {
-    "name": "base_url",
+{
+  "base_url": {
     "type": "string",
     "description": "Grok API 端点 URL（必填）",
-    "hint": "例如: https://api.example.com"
+    "hint": "例如: https://api.x.ai"
   },
-  {
-    "name": "api_key",
+  "api_key": {
     "type": "string",
     "description": "Grok API 密钥（必填）",
     "hint": "你的 API Key"
   },
-  {
-    "name": "model",
+  "model": {
     "type": "string",
     "description": "模型名称",
     "default": "grok-4-expert"
   },
-  {
-    "name": "timeout_seconds",
+  "timeout_seconds": {
     "type": "int",
     "description": "请求超时时间（秒）",
     "default": 60
   },
-  {
-    "name": "extra_body",
+  "extra_body": {
     "type": "text",
     "description": "额外请求体参数（JSON 格式）",
     "hint": "例如: {\"enable_search\": true}",
     "default": "{}"
   },
-  {
-    "name": "extra_headers",
+  "extra_headers": {
     "type": "text",
     "description": "额外请求头（JSON 格式）",
     "hint": "例如: {\"X-Custom-Header\": \"value\"}",
     "default": "{}"
   },
-  {
-    "name": "enable_skill",
+  "enable_skill": {
     "type": "bool",
     "description": "是否安装 Skill 到 skills 目录（供 LLM 脚本调用）",
     "default": false
   }
-]
+}
