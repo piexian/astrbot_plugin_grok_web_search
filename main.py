@@ -22,7 +22,7 @@ from .grok_client import (
 )
 
 PLUGIN_NAME = "astrbot_plugin_grok_web_search"
-PLUGIN_VERSION = "1.0.0"
+PLUGIN_VERSION = "1.0.1"
 
 
 @register(
@@ -201,11 +201,16 @@ class GrokSearchPlugin(Star):
         sources = result.get("sources", [])
         elapsed = result.get("elapsed_ms", 0)
 
+        show_sources = self.config.get("show_sources", False)
+        max_sources = self.config.get("max_sources", 5)
+
         lines = [content]
 
-        if sources:
+        if show_sources and sources:
+            if max_sources > 0:
+                sources = sources[:max_sources]
             lines.append("\n来源:")
-            for i, src in enumerate(sources[:5], 1):
+            for i, src in enumerate(sources, 1):
                 url = src.get("url", "")
                 title = src.get("title", "")
                 if title:
@@ -218,7 +223,7 @@ class GrokSearchPlugin(Star):
         return "\n".join(lines)
 
     def _format_result_for_llm(self, result: dict) -> str:
-        """格式化搜索结果供 LLM 使用"""
+        """格式化搜索结果供 LLM 使用（纯文本，无 Markdown）"""
         if not result.get("ok"):
             error = result.get("error", "未知错误")
             raw = result.get("raw", "")
@@ -227,20 +232,26 @@ class GrokSearchPlugin(Star):
         content = result.get("content", "")
         sources = result.get("sources", [])
 
+        show_sources = self.config.get("show_sources", False)
+        max_sources = self.config.get("max_sources", 5)
+
         lines = [f"搜索结果:\n{content}"]
 
-        if sources:
+        if show_sources and sources:
+            if max_sources > 0:
+                sources = sources[:max_sources]
             lines.append("\n参考来源:")
-            for src in sources:
+            for i, src in enumerate(sources, 1):
                 url = src.get("url", "")
                 title = src.get("title", "")
                 snippet = src.get("snippet", "")
                 if title:
-                    lines.append(f"- [{title}]({url})")
+                    lines.append(f"  {i}. {title}")
+                    lines.append(f"     {url}")
                 else:
-                    lines.append(f"- {url}")
+                    lines.append(f"  {i}. {url}")
                 if snippet:
-                    lines.append(f"  {snippet}")
+                    lines.append(f"     {snippet}")
 
         return "\n".join(lines)
 

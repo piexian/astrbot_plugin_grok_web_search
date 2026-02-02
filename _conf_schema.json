@@ -19,6 +19,16 @@
     "description": "请求超时时间（秒）",
     "default": 60
   },
+  "show_sources": {
+    "type": "bool",
+    "description": "是否在结果中显示来源 URL",
+    "default": false
+  },
+  "max_sources": {
+    "type": "int",
+    "description": "最大返回来源数量（0 表示不限制）",
+    "default": 5
+  },
   "extra_body": {
     "type": "text",
     "description": "额外请求体参数（JSON 格式）",

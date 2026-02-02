@@ -29,6 +29,8 @@
 | `api_key` | string | 是 | API 密钥 |
 | `model` | string | 否 | 模型名称（默认: grok-4-expert） |
 | `timeout_seconds` | int | 否 | 超时时间（默认: 60秒） |
+| `show_sources` | bool | 否 | 是否显示来源 URL（默认: false） |
+| `max_sources` | int | 否 | 最大返回来源数量，0 表示不限制（默认: 5） |
 | `extra_body` | JSON | 否 | 额外请求体参数 |
 | `extra_headers` | JSON | 否 | 额外请求头 |
 | `enable_skill` | bool | 否 | 是否安装 Skill 到 skills 目录 |
@@ -86,6 +88,10 @@ astrbot_plugin_grok_web_search/
 ## 致谢
 
 本插件基于 [grok-skill](https://github.com/Frankieli123/grok-skill) 项目改造，感谢原作者 [@a3180623](https://linux.do/u/a3180623/summary) 的贡献。
+
+## 更新日志
+
+查看 [CHANGELOG.md](CHANGELOG.md) 了解版本更新历史。
 
 ## 支持
 
