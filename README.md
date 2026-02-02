@@ -94,4 +94,4 @@ astrbot_plugin_grok_web_search/
 
 ## 许可
 
-MIT License
+AGPL-3.0 License
