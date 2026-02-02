@@ -14,7 +14,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 from astrbot.core.provider.entities import ProviderRequest
-from astrbot.core.star.star_tools import FunctionToolManager
+from astrbot.core.provider.func_tool_manager import FunctionToolManager
 
 from .grok_client import (
     grok_search,
