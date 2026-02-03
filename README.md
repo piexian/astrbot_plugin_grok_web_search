@@ -27,7 +27,9 @@
 |--------|------|------|------|
 | `base_url` | string | 是 | Grok API 端点 URL |
 | `api_key` | string | 是 | API 密钥 |
-| `model` | string | 否 | 模型名称（默认: grok-4-expert） |
+| `model` | string | 否 | 模型名称（默认: grok-4-fast） |
+| `enable_thinking` | bool | 否 | 是否开启思考模式（默认: true） |
+| `thinking_budget` | int | 否 | 思考 token 预算（默认: 32000） |
 | `timeout_seconds` | int | 否 | 超时时间（默认: 60秒） |
 | `show_sources` | bool | 否 | 是否显示来源 URL（默认: false） |
 | `max_sources` | int | 否 | 最大返回来源数量，0 表示不限制（默认: 5） |
