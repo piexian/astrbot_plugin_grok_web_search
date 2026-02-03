@@ -94,8 +94,10 @@ async def grok_search(
     query: str,
     base_url: str,
     api_key: str,
-    model: str = "grok-4-expert",
+    model: str = "grok-4-fast",
     timeout: float = 60.0,
+    enable_thinking: bool = True,
+    thinking_budget: int = 32000,
     extra_body: dict | None = None,
     extra_headers: dict | None = None,
     session: aiohttp.ClientSession | None = None,
@@ -109,6 +111,8 @@ async def grok_search(
         api_key: API 密钥
         model: 模型名称
         timeout: 超时时间（秒）
+        enable_thinking: 是否开启思考模式
+        thinking_budget: 思考 token 预算
         extra_body: 额外请求体参数
         extra_headers: 额外请求头
         session: 可选的 aiohttp.ClientSession，传入时复用，否则创建临时 session
@@ -168,6 +172,13 @@ async def grok_search(
         "temperature": 0.2,
         "stream": False,
     }
+
+    # 添加思考模式参数
+    if enable_thinking:
+        body["reasoning_effort"] = "high"
+        if thinking_budget > 0:
+            body["reasoning_budget_tokens"] = thinking_budget
+
     if extra_body:
         # 保护关键字段不被覆盖
         protected_keys = {"model", "messages", "stream"}
@@ -185,6 +196,53 @@ async def grok_search(
         for key, value in extra_headers.items():
             if str(key).lower() not in protected_headers:
                 headers[str(key)] = str(value)
+
+    def _parse_sse_response(raw_text: str) -> dict[str, Any] | None:
+        """解析 SSE 流式响应，合并所有 chunk 的内容"""
+        chunks: list[dict[str, Any]] = []
+        for line in raw_text.splitlines():
+            line = line.strip()
+            if not line or line.startswith(":"):
+                continue
+            if line.startswith("data:"):
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(data_str)
+                    if isinstance(chunk, dict):
+                        chunks.append(chunk)
+                except json.JSONDecodeError:
+                    continue
+
+        if not chunks:
+            return None
+
+        # 合并所有 chunk 的 delta content
+        merged_content = ""
+        model_name = ""
+        usage_info = {}
+
+        for chunk in chunks:
+            if not model_name:
+                model_name = chunk.get("model", "")
+            if chunk.get("usage"):
+                usage_info = chunk["usage"]
+
+            choices = chunk.get("choices", [])
+            if choices and isinstance(choices, list):
+                choice = choices[0]
+                delta = choice.get("delta", {})
+                if delta and isinstance(delta, dict):
+                    content = delta.get("content", "")
+                    if content:
+                        merged_content += content
+
+        return {
+            "choices": [{"message": {"content": merged_content}}],
+            "model": model_name,
+            "usage": usage_info,
+        }
 
     async def _do_request(
         s: aiohttp.ClientSession,
@@ -221,11 +279,34 @@ async def grok_search(
                     "elapsed_ms": int((time.time() - started) * 1000),
                 }
 
+            # 读取响应内容
+            raw_text = await resp.text()
+            content_type = resp.headers.get("Content-Type", "")
+
+            # 检查是否为 SSE 流式响应
+            is_sse = (
+                "text/event-stream" in content_type
+                or raw_text.strip().startswith("data:")
+            )
+
+            if is_sse:
+                # 解析 SSE 流式响应
+                parsed = _parse_sse_response(raw_text)
+                if parsed:
+                    return {"ok": True, "data": parsed}
+                return {
+                    "ok": False,
+                    "error": "SSE 流式响应解析失败",
+                    "content": "",
+                    "sources": [],
+                    "raw": raw_text[:2000] if raw_text else "",
+                    "elapsed_ms": int((time.time() - started) * 1000),
+                }
+
             # 尝试解析 JSON 响应
             try:
-                return {"ok": True, "data": await resp.json()}
-            except (aiohttp.ContentTypeError, json.JSONDecodeError) as e:
-                raw_text = await resp.text()
+                return {"ok": True, "data": json.loads(raw_text)}
+            except json.JSONDecodeError as e:
                 return {
                     "ok": False,
                     "error": "响应解析失败，API 返回了非 JSON 格式的数据",

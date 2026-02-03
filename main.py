@@ -185,12 +185,23 @@ class GrokSearchPlugin(Star):
         except (ValueError, TypeError):
             timeout = 60.0
 
+        # 安全解析 thinking_budget 配置
+        try:
+            thinking_budget_val = self.config.get("thinking_budget", 32000)
+            thinking_budget = int(thinking_budget_val) if thinking_budget_val is not None else 32000
+            if thinking_budget < 0:
+                thinking_budget = 32000
+        except (ValueError, TypeError):
+            thinking_budget = 32000
+
         return await grok_search(
             query=query,
             base_url=self.config.get("base_url", ""),
             api_key=self.config.get("api_key", ""),
-            model=self.config.get("model", "grok-4-expert"),
+            model=self.config.get("model", "grok-4-fast"),
             timeout=timeout,
+            enable_thinking=self.config.get("enable_thinking", True),
+            thinking_budget=thinking_budget,
             extra_body=self._parse_json_config("extra_body"),
             extra_headers=self._parse_json_config("extra_headers"),
             session=self._session,

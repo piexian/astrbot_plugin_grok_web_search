@@ -180,6 +180,54 @@ def _parse_json_object(raw: str, *, label: str) -> dict[str, Any]:
     return value
 
 
+def _parse_sse_response(raw_text: str) -> dict[str, Any] | None:
+    """解析 SSE 流式响应，合并所有 chunk 的内容"""
+    chunks: list[dict[str, Any]] = []
+    for line in raw_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            data_str = line[5:].strip()
+            if data_str == "[DONE]":
+                continue
+            try:
+                chunk = json.loads(data_str)
+                if isinstance(chunk, dict):
+                    chunks.append(chunk)
+            except json.JSONDecodeError:
+                continue
+
+    if not chunks:
+        return None
+
+    # 合并所有 chunk 的 delta content
+    merged_content = ""
+    model_name = ""
+    usage_info = {}
+
+    for chunk in chunks:
+        if not model_name:
+            model_name = chunk.get("model", "")
+        if chunk.get("usage"):
+            usage_info = chunk["usage"]
+
+        choices = chunk.get("choices", [])
+        if choices and isinstance(choices, list):
+            choice = choices[0]
+            delta = choice.get("delta", {})
+            if delta and isinstance(delta, dict):
+                content = delta.get("content", "")
+                if content:
+                    merged_content += content
+
+    return {
+        "choices": [{"message": {"content": merged_content}}],
+        "model": model_name,
+        "usage": usage_info,
+    }
+
+
 def _request_chat_completions(
     *,
     base_url: str,
@@ -187,6 +235,8 @@ def _request_chat_completions(
     model: str,
     query: str,
     timeout_seconds: float,
+    enable_thinking: bool,
+    thinking_budget: int,
     extra_headers: dict[str, Any],
     extra_body: dict[str, Any],
 ) -> dict[str, Any]:
@@ -209,6 +259,13 @@ def _request_chat_completions(
         "temperature": 0.2,
         "stream": False,
     }
+
+    # 添加思考模式参数
+    if enable_thinking:
+        body["reasoning_effort"] = "high"
+        if thinking_budget > 0:
+            body["reasoning_budget_tokens"] = thinking_budget
+
     body.update(extra_body)
 
     headers: dict[str, str] = {
@@ -225,8 +282,22 @@ def _request_chat_completions(
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-        raw = resp.read().decode("utf-8", errors="replace")
-        return json.loads(raw)
+        raw_text = resp.read().decode("utf-8", errors="replace")
+        content_type = resp.headers.get("Content-Type", "")
+
+        # 检查是否为 SSE 流式响应
+        is_sse = (
+            "text/event-stream" in content_type
+            or raw_text.strip().startswith("data:")
+        )
+
+        if is_sse:
+            parsed = _parse_sse_response(raw_text)
+            if parsed:
+                return parsed
+            raise ValueError("SSE 流式响应解析失败")
+
+        return json.loads(raw_text)
 
 
 def main() -> int:
@@ -240,6 +311,18 @@ def main() -> int:
     parser.add_argument("--model", default="", help="Override model.")
     parser.add_argument(
         "--timeout-seconds", type=float, default=0.0, help="Override timeout (seconds)."
+    )
+    parser.add_argument(
+        "--enable-thinking",
+        type=str,
+        default="",
+        help="Enable thinking mode (true/false).",
+    )
+    parser.add_argument(
+        "--thinking-budget",
+        type=int,
+        default=0,
+        help="Thinking token budget.",
     )
     parser.add_argument(
         "--extra-body-json",
@@ -318,7 +401,7 @@ def main() -> int:
         args.model.strip()
         or os.environ.get("GROK_MODEL", "").strip()
         or str(config.get("model") or "").strip()
-        or "grok-4-expert"
+        or "grok-4-fast"
     )
 
     timeout_seconds = args.timeout_seconds
@@ -334,6 +417,34 @@ def main() -> int:
             timeout_seconds = 0.0
     if not timeout_seconds or timeout_seconds <= 0:
         timeout_seconds = 60.0
+
+    # 解析思考模式配置
+    enable_thinking_str = (
+        args.enable_thinking.strip().lower()
+        or os.environ.get("GROK_ENABLE_THINKING", "").strip().lower()
+    )
+    if enable_thinking_str in ("true", "1", "yes"):
+        enable_thinking = True
+    elif enable_thinking_str in ("false", "0", "no"):
+        enable_thinking = False
+    else:
+        # 从配置文件读取，默认 True
+        cfg_enable_thinking = config.get("enable_thinking")
+        enable_thinking = cfg_enable_thinking if isinstance(cfg_enable_thinking, bool) else True
+
+    thinking_budget = args.thinking_budget
+    if not thinking_budget:
+        try:
+            thinking_budget = int(os.environ.get("GROK_THINKING_BUDGET", "0") or "0")
+        except (ValueError, TypeError):
+            thinking_budget = 0
+    if not thinking_budget:
+        try:
+            thinking_budget = int(config.get("thinking_budget") or 0)
+        except (ValueError, TypeError):
+            thinking_budget = 0
+    if not thinking_budget or thinking_budget <= 0:
+        thinking_budget = 32000
 
     if not base_url:
         sys.stderr.write(
@@ -383,6 +494,8 @@ def main() -> int:
             model=model,
             query=args.query,
             timeout_seconds=timeout_seconds,
+            enable_thinking=enable_thinking,
+            thinking_budget=thinking_budget,
             extra_headers=extra_headers,
             extra_body=extra_body,
         )

@@ -2,6 +2,20 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.0.4] - 2026-02-03
+
+### Added
+- 兼容 SSE 流式响应：自动检测并解析 `text/event-stream` 格式的响应，合并所有 chunk 内容后返回
+- 新增 `enable_thinking` 配置项：是否开启思考模式（默认开启）
+- 新增 `thinking_budget` 配置项：思考 token 预算（默认 32000）
+
+### Changed
+- 默认模型从 `grok-4-expert` 改为 `grok-4-fast`
+- 开启思考模式时自动添加 `reasoning_effort: "high"` 和 `reasoning_budget_tokens` 参数
+
+<details>
+<summary>历史版本</summary>
+
 ## [1.0.3] - 2026-02-02
 
 ### Added
@@ -19,9 +33,6 @@
 ### Security
 - `extra_body` 保护关键字段（`model`、`messages`、`stream`）不被覆盖
 - `extra_headers` 保护关键请求头（`Authorization`、`Content-Type`）不被覆盖
-
-<details>
-<summary>历史版本</summary>
 
 ## [1.0.2] - 2026-02-02
 

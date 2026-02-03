@@ -12,7 +12,17 @@
   "model": {
     "type": "string",
     "description": "模型名称",
-    "default": "grok-4-expert"
+    "default": "grok-4-fast"
+  },
+  "enable_thinking": {
+    "type": "bool",
+    "description": "是否开启思考模式（reasoning）",
+    "default": true
+  },
+  "thinking_budget": {
+    "type": "int",
+    "description": "思考 token 预算（仅在开启思考模式时生效）",
+    "default": 32000
   },
   "timeout_seconds": {
     "type": "int",
