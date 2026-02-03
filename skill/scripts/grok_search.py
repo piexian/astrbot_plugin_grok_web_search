@@ -286,9 +286,8 @@ def _request_chat_completions(
         content_type = resp.headers.get("Content-Type", "")
 
         # 检查是否为 SSE 流式响应
-        is_sse = (
-            "text/event-stream" in content_type
-            or raw_text.strip().startswith("data:")
+        is_sse = "text/event-stream" in content_type or raw_text.strip().startswith(
+            "data:"
         )
 
         if is_sse:
@@ -430,7 +429,9 @@ def main() -> int:
     else:
         # 从配置文件读取，默认 True
         cfg_enable_thinking = config.get("enable_thinking")
-        enable_thinking = cfg_enable_thinking if isinstance(cfg_enable_thinking, bool) else True
+        enable_thinking = (
+            cfg_enable_thinking if isinstance(cfg_enable_thinking, bool) else True
+        )
 
     thinking_budget = args.thinking_budget
     if not thinking_budget:

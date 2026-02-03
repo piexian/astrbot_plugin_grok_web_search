@@ -284,9 +284,8 @@ async def grok_search(
             content_type = resp.headers.get("Content-Type", "")
 
             # 检查是否为 SSE 流式响应
-            is_sse = (
-                "text/event-stream" in content_type
-                or raw_text.strip().startswith("data:")
+            is_sse = "text/event-stream" in content_type or raw_text.strip().startswith(
+                "data:"
             )
 
             if is_sse:

@@ -188,7 +188,9 @@ class GrokSearchPlugin(Star):
         # 安全解析 thinking_budget 配置
         try:
             thinking_budget_val = self.config.get("thinking_budget", 32000)
-            thinking_budget = int(thinking_budget_val) if thinking_budget_val is not None else 32000
+            thinking_budget = (
+                int(thinking_budget_val) if thinking_budget_val is not None else 32000
+            )
             if thinking_budget < 0:
                 thinking_budget = 32000
         except (ValueError, TypeError):
