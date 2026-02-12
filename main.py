@@ -13,9 +13,10 @@ from pathlib import Path
 import aiohttp
 import asyncio
 import json
+import time
 
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.provider.func_tool_manager import FunctionToolManager
@@ -29,6 +30,19 @@ from .grok_client import (
 )
 
 PLUGIN_NAME = "astrbot_plugin_grok_web_search"
+
+
+def _fmt_tokens(n: int) -> str:
+    """将 token 数量格式化为简短形式，如 1m2k、3.5k、800。"""
+    if n >= 1_000_000:
+        m, remain = divmod(n, 1_000_000)
+        k = remain // 1_000
+        return f"{m}m{k}k" if k else f"{m}m"
+    if n >= 1_000:
+        k, remain = divmod(n, 1_000)
+        h = remain // 100
+        return f"{k}.{h}k" if h else f"{k}k"
+    return str(n)
 
 
 class GrokSearchPlugin(Star):
@@ -293,6 +307,7 @@ class GrokSearchPlugin(Star):
         if self.config.get("use_builtin_provider", False):
             attempts = 0
             last_exc = None
+            started = time.time()
             while True:
                 try:
                     # 严格按配置获取 provider
@@ -334,12 +349,20 @@ class GrokSearchPlugin(Star):
                                             "snippet": str(item.get("snippet") or ""),
                                         }
                                     )
+                        usage = {}
+                        if llm_resp.usage:
+                            usage = {
+                                "prompt_tokens": llm_resp.usage.input,
+                                "completion_tokens": llm_resp.usage.output,
+                                "total_tokens": llm_resp.usage.total,
+                            }
                         return {
                             "ok": True,
                             "content": content,
                             "sources": sources,
-                            "elapsed_ms": 0,
+                            "elapsed_ms": int((time.time() - started) * 1000),
                             "retries": attempts,
+                            "usage": usage,
                             "raw": text,
                         }
                     except Exception:
@@ -392,7 +415,7 @@ class GrokSearchPlugin(Star):
 
         content = result.get("content", "")
         sources = result.get("sources", [])
-        elapsed = result.get("elapsed_ms", 0)
+        elapsed = result.get("elapsed_ms", 0) / 1000
 
         show_sources = self.config.get("show_sources", False)
         max_sources = self.config.get("max_sources", 5)
@@ -411,12 +434,19 @@ class GrokSearchPlugin(Star):
                 else:
                     lines.append(f"  {i}. {url}")
 
-        # 显示耗时和重试次数
+        # 显示耗时、重试次数和 token 用量
         retry_info = ""
         retries = result.get("retries", 0)
         if retries > 0:
             retry_info = f"，重试 {retries} 次"
-        lines.append(f"\n(耗时: {elapsed}ms{retry_info})")
+
+        token_info = ""
+        usage = result.get("usage") or {}
+        total_tokens = usage.get("total_tokens", 0)
+        if total_tokens:
+            token_info = f"，tokens: {_fmt_tokens(total_tokens)}"
+
+        lines.append(f"\n(耗时: {elapsed:.1f}s{retry_info}{token_info})")
 
         return "\n".join(lines)
 
@@ -529,7 +559,16 @@ class GrokSearchPlugin(Star):
             use_retry=True,
         )
         event.should_call_llm(True)
-        yield event.plain_result(self._format_result(result))
+        try:
+            await event.send(MessageChain().message(self._format_result(result)))
+        except Exception as e:
+            logger.warning(f"[{PLUGIN_NAME}] 发送搜索结果失败: {e}")
+            try:
+                await event.send(
+                    MessageChain().message("搜索完成，但消息发送失败，请重试。")
+                )
+            except Exception:
+                pass
 
     @filter.llm_tool(name="grok_web_search")
     async def grok_tool(self, event: AstrMessageEvent, query: str) -> str:
