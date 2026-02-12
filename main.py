@@ -272,23 +272,8 @@ class GrokSearchPlugin(Star):
         retry_delay = 1.0
         retryable_status_codes = None
         if use_retry:
-            try:
-                max_retries_val = self.config.get("max_retries", 3)
-                max_retries = int(max_retries_val) if max_retries_val is not None else 3
-                if max_retries < 0:
-                    max_retries = 3
-            except (ValueError, TypeError):
-                max_retries = 3
-
-            try:
-                retry_delay_val = self.config.get("retry_delay", 1.0)
-                retry_delay = (
-                    float(retry_delay_val) if retry_delay_val is not None else 1.0
-                )
-                if retry_delay < 0:
-                    retry_delay = 1.0
-            except (ValueError, TypeError):
-                retry_delay = 1.0
+            max_retries = self.config.get("max_retries", 3)
+            retry_delay = self.config.get("retry_delay", 1.0)
 
             # 解析可重试状态码（直接从 list 类型配置获取）
             retryable_codes = self.config.get("retryable_status_codes", [])
@@ -369,7 +354,7 @@ class GrokSearchPlugin(Star):
                     attempts += 1
                     if not use_retry or attempts > max_retries:
                         return {"ok": False, "error": str(last_exc)}
-                    await asyncio.sleep(retry_delay)
+                    await asyncio.sleep(retry_delay * attempts)
 
         # 否则使用 HTTP 客户端向外部 Grok API 发起请求
         try:

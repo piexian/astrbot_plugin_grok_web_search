@@ -57,7 +57,8 @@
     "type": "int",
     "description": "最大重试次数",
     "hint": "请求失败时的最大重试次数",
-    "default": 3
+    "default": 3,
+    "slider": {"min": 0, "max": 10, "step": 1}
   },
   "retry_delay": {
     "type": "float",
