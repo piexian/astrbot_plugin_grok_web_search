@@ -66,10 +66,14 @@ class GrokSearchPlugin(Star):
         base_url = normalize_base_url(self.config.get("base_url", ""))
         api_key = normalize_api_key(self.config.get("api_key", ""))
         if not base_url:
-            logger.warning(f"[{PLUGIN_NAME}] 缺少 base_url 配置，请在插件设置中填写 Grok API 端点")
+            logger.warning(
+                f"[{PLUGIN_NAME}] 缺少 base_url 配置，请在插件设置中填写 Grok API 端点"
+            )
             return
         if not api_key:
-            logger.warning(f"[{PLUGIN_NAME}] 缺少 api_key 配置，请在插件设置中填写 API 密钥")
+            logger.warning(
+                f"[{PLUGIN_NAME}] 缺少 api_key 配置，请在插件设置中填写 API 密钥"
+            )
             return
 
         # 通过 v1/models 接口验证连通性和密钥有效性
@@ -89,19 +93,31 @@ class GrokSearchPlugin(Star):
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status == 401:
-                        logger.warning(f"[{PLUGIN_NAME}] API 密钥无效（401），请检查 api_key 配置")
+                        logger.warning(
+                            f"[{PLUGIN_NAME}] API 密钥无效（401），请检查 api_key 配置"
+                        )
                     elif resp.status == 403:
-                        logger.warning(f"[{PLUGIN_NAME}] API 密钥权限不足（403），请检查 api_key 权限")
+                        logger.warning(
+                            f"[{PLUGIN_NAME}] API 密钥权限不足（403），请检查 api_key 权限"
+                        )
                     elif resp.status == 404:
-                        logger.warning(f"[{PLUGIN_NAME}] v1/models 端点不存在（404），请检查 base_url 配置是否正确")
+                        logger.warning(
+                            f"[{PLUGIN_NAME}] v1/models 端点不存在（404），请检查 base_url 配置是否正确"
+                        )
                     elif resp.status != 200:
-                        logger.warning(f"[{PLUGIN_NAME}] API 连通性检查返回 HTTP {resp.status}，请确认配置")
+                        logger.warning(
+                            f"[{PLUGIN_NAME}] API 连通性检查返回 HTTP {resp.status}，请确认配置"
+                        )
                     else:
                         logger.info(f"[{PLUGIN_NAME}] API 连通性检查通过")
         except aiohttp.ClientError as e:
-            logger.warning(f"[{PLUGIN_NAME}] API 连通性检查失败（网络错误）: {e}，请检查 base_url 配置")
+            logger.warning(
+                f"[{PLUGIN_NAME}] API 连通性检查失败（网络错误）: {e}，请检查 base_url 配置"
+            )
         except asyncio.TimeoutError:
-            logger.warning(f"[{PLUGIN_NAME}] API 连通性检查超时，请检查 base_url 是否可达")
+            logger.warning(
+                f"[{PLUGIN_NAME}] API 连通性检查超时，请检查 base_url 是否可达"
+            )
 
     def _get_skills_path(self) -> Path:
         """获取 skills 目录路径"""
@@ -378,7 +394,9 @@ class GrokSearchPlugin(Star):
             return {"ok": False, "error": f"API 调用异常: {e}"}
 
         if not result.get("ok"):
-            logger.warning(f"[{PLUGIN_NAME}] API 调用失败: {result.get('error', '未知错误')}")
+            logger.warning(
+                f"[{PLUGIN_NAME}] API 调用失败: {result.get('error', '未知错误')}"
+            )
         return result
 
     def _format_result(self, result: dict) -> str:
@@ -532,9 +550,7 @@ class GrokSearchPlugin(Star):
         Args:
             query(string): 搜索查询内容，应该是清晰具体的问题或关键词
         """
-        result = await self._do_search(
-            query, use_retry=True
-        )
+        result = await self._do_search(query, use_retry=True)
         return self._format_result_for_llm(result)
 
     @filter.on_llm_request()
