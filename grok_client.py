@@ -4,12 +4,22 @@ Grok API 异步客户端
 通过 OpenAI 兼容接口调用 Grok 进行联网搜索
 """
 
+import asyncio
 import json
 import re
 import time
 from typing import Any
 
 import aiohttp
+
+# 默认系统提示词（要求返回 JSON 格式，LLM Tool 和 Skill 使用）
+DEFAULT_JSON_SYSTEM_PROMPT = (
+    "You are a web research assistant. Use live web search/browsing when answering. "
+    "Return ONLY a single JSON object with keys: "
+    "content (string), sources (array of objects with url/title/snippet when possible). "
+    "Keep content concise and evidence-backed. "
+    "IMPORTANT: Do NOT use Markdown formatting in the content field - use plain text only."
+)
 
 
 def normalize_api_key(api_key: str) -> str:
@@ -101,6 +111,10 @@ async def grok_search(
     extra_body: dict | None = None,
     extra_headers: dict | None = None,
     session: aiohttp.ClientSession | None = None,
+    system_prompt: str | None = None,
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
+    retryable_status_codes: set[int] | None = None,
 ) -> dict[str, Any]:
     """
     调用 Grok API 进行联网搜索（异步）
@@ -116,6 +130,10 @@ async def grok_search(
         extra_body: 额外请求体参数
         extra_headers: 额外请求头
         session: 可选的 aiohttp.ClientSession，传入时复用，否则创建临时 session
+        system_prompt: 自定义系统提示词，为 None 时使用默认提示词
+        max_retries: 最大重试次数（默认 3 次）
+        retry_delay: 重试间隔时间（秒，默认 1.0）
+        retryable_status_codes: 可重试的 HTTP 状态码集合，为 None 时使用默认值
 
     Returns:
         {
@@ -125,6 +143,7 @@ async def grok_search(
             "raw": str,          # 原始响应（解析失败时）
             "error": str,        # 错误信息（失败时）
             "elapsed_ms": int,   # 耗时
+            "retries": int,      # 重试次数
         }
     """
     started = time.time()
@@ -155,23 +174,22 @@ async def grok_search(
 
     url = f"{normalize_base_url(base_url)}/v1/chat/completions"
 
-    system_prompt = (
-        "You are a web research assistant. Use live web search/browsing when answering. "
-        "Return ONLY a single JSON object with keys: "
-        "content (string), sources (array of objects with url/title/snippet when possible). "
-        "Keep content concise and evidence-backed. "
-        "IMPORTANT: Do NOT use Markdown formatting in the content field - use plain text only."
+    # 使用自定义提示词或默认提示词
+    final_system_prompt = (
+        system_prompt if system_prompt is not None else DEFAULT_JSON_SYSTEM_PROMPT
     )
 
+    # 构建请求体：仅当提供 model 时才添加 model 字段（允许供应商/端点使用默认模型）
     body: dict[str, Any] = {
-        "model": model,
         "messages": [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": final_system_prompt},
             {"role": "user", "content": query},
         ],
         "temperature": 0.2,
         "stream": False,
     }
+    if model:
+        body["model"] = model
 
     # 添加思考模式参数
     if enable_thinking:
@@ -315,35 +333,91 @@ async def grok_search(
                     "elapsed_ms": int((time.time() - started) * 1000),
                 }
 
-    try:
-        if session is not None:
-            result = await _do_request(session)
-        else:
-            async with aiohttp.ClientSession() as temp_session:
-                result = await _do_request(temp_session)
+    # 可重试的错误状态码（默认值）
+    if retryable_status_codes is None:
+        retryable_status_codes = {429, 500, 502, 503, 504}
 
-        if not result.get("ok") or "data" not in result:
-            return result
-        data = result["data"]
+    result = None
+    last_error = None
+    retry_count = 0
 
-    except aiohttp.ClientError as e:
+    for attempt in range(max_retries + 1):
+        try:
+            if session is not None:
+                result = await _do_request(session)
+            else:
+                async with aiohttp.ClientSession() as temp_session:
+                    result = await _do_request(temp_session)
+
+            # 检查是否需要重试
+            if result.get("ok"):
+                # 成功的响应，跳出循环
+                break
+
+            # 检查是否为可重试的错误
+            error_msg = result.get("error", "")
+            should_retry = False
+
+            # HTTP 状态码可重试
+            if any(f"HTTP {code}" in error_msg for code in retryable_status_codes):
+                should_retry = True
+
+            if should_retry and attempt < max_retries:
+                retry_count = attempt + 1
+                await asyncio.sleep(retry_delay * (attempt + 1))  # 线性递增退避
+                continue
+
+            # 不可重试的错误，直接返回
+            break
+
+        except aiohttp.ClientError as e:
+            last_error = f"网络请求失败: {e}"
+            if attempt < max_retries:
+                retry_count = attempt + 1
+                await asyncio.sleep(retry_delay * (attempt + 1))
+                continue
+            return {
+                "ok": False,
+                "error": last_error,
+                "content": "",
+                "sources": [],
+                "raw": "",
+                "elapsed_ms": int((time.time() - started) * 1000),
+                "retries": retry_count,
+            }
+        except TimeoutError:
+            last_error = (
+                f"请求超时（{timeout}秒），请检查网络或增加 timeout_seconds 配置"
+            )
+            if attempt < max_retries:
+                retry_count = attempt + 1
+                await asyncio.sleep(retry_delay * (attempt + 1))
+                continue
+            return {
+                "ok": False,
+                "error": last_error,
+                "content": "",
+                "sources": [],
+                "raw": "",
+                "elapsed_ms": int((time.time() - started) * 1000),
+                "retries": retry_count,
+            }
+
+    if result is None:
         return {
             "ok": False,
-            "error": f"网络请求失败: {e}",
+            "error": last_error or "未知错误",
             "content": "",
             "sources": [],
             "raw": "",
             "elapsed_ms": int((time.time() - started) * 1000),
+            "retries": retry_count,
         }
-    except TimeoutError:
-        return {
-            "ok": False,
-            "error": f"请求超时（{timeout}秒），请检查网络或增加 timeout_seconds 配置",
-            "content": "",
-            "sources": [],
-            "raw": "",
-            "elapsed_ms": int((time.time() - started) * 1000),
-        }
+
+    if not result.get("ok") or "data" not in result:
+        result["retries"] = retry_count
+        return result
+    data = result["data"]
 
     # 解析响应
     message = ""
@@ -425,4 +499,5 @@ async def grok_search(
         "model": data.get("model") or model,
         "usage": data.get("usage") or {},
         "elapsed_ms": int((time.time() - started) * 1000),
+        "retries": retry_count,
     }

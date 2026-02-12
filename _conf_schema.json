@@ -1,44 +1,108 @@
 {
-  "base_url": {
-    "type": "string",
-    "description": "Grok API 端点 URL（必填）",
-    "hint": "例如: https://api.x.ai"
+  "use_builtin_provider": {
+    "type": "bool",
+    "description": "是否使用 AstrBot 自带供应商",
+    "hint": "启用后将使用已配置的 LLM 供应商,无需配置模型参数",
+    "default": false
   },
-  "api_key": {
+  "provider": {
+    "_special": "select_provider",
     "type": "string",
-    "description": "Grok API 密钥（必填）",
-    "hint": "你的 API Key"
+    "description": "选择要使用的 LLM 供应商",
+    "hint": "仅当启用自带供应商时生效,选择已配置的 LLM 供应商"
   },
   "model": {
     "type": "string",
     "description": "模型名称",
+    "hint": "选择要使用的 Grok 模型",
     "default": "grok-4-fast"
   },
-  "enable_thinking": {
-    "type": "bool",
-    "description": "是否开启思考模式（reasoning）",
-    "default": true
+
+  "base_url": {
+    "type": "string",
+    "description": "Grok API 端点 URL",
+    "hint": "使用自定义供应商时必填,例如: https://api.example.com"
   },
-  "thinking_budget": {
-    "type": "int",
-    "description": "思考 token 预算（仅在开启思考模式时生效）",
-    "default": 32000
+  "api_key": {
+    "type": "string",
+    "description": "Grok API 密钥",
+    "hint": "使用自定义供应商时必填,你的 API Key"
   },
   "timeout_seconds": {
     "type": "int",
     "description": "请求超时时间（秒）",
+    "hint": "控制每次请求的最大等待时间",
     "default": 60
   },
+  "reuse_session": {
+    "type": "bool",
+    "description": "是否复用 HTTP 会话",
+    "hint": "高频调用场景可开启以减少连接开销",
+    "default": false
+  },
+
+  "enable_thinking": {
+    "type": "bool",
+    "description": "是否开启思考模式",
+    "hint": "允许模型在回答前进行多轮思考",
+    "default": true
+  },
+  "thinking_budget": {
+    "type": "int",
+    "description": "思考 token 预算",
+    "hint": "控制思考阶段可使用的最大 token 数量",
+    "default": 32000
+  },
+  "max_retries": {
+    "type": "int",
+    "description": "最大重试次数",
+    "hint": "请求失败时的最大重试次数",
+    "default": 3,
+    "slider": {"min": 0, "max": 10, "step": 1}
+  },
+  "retry_delay": {
+    "type": "float",
+    "description": "重试间隔时间（秒）",
+    "hint": "控制重试间隔，范围 0.1-5 秒",
+    "default": 1.0,
+    "slider": {"min": 0.1, "max": 5, "step": 0.1}
+  },
+  "retryable_status_codes": {
+    "type": "list",
+    "description": "可重试的 HTTP 状态码",
+    "hint": "自定义重试的 HTTP 状态码列表",
+    "default": [429, 500, 502, 503, 504]
+  },
+
   "show_sources": {
     "type": "bool",
     "description": "是否在结果中显示来源 URL",
+    "hint": "启用后将在搜索结果中显示来源链接",
     "default": false
   },
   "max_sources": {
     "type": "int",
-    "description": "最大返回来源数量（0 表示不限制）",
+    "description": "最大返回来源数量",
+    "hint": "控制返回的来源链接数量.0 表示不限制",
     "default": 5
   },
+  "custom_system_prompt": {
+    "type": "text",
+    "description": "自定义系统提示词",
+    "hint": "留空使用默认提示词",
+    "default": "",
+    "editor_mode": true,
+    "editor_language": "markdown",
+    "editor_theme": "vs-dark"
+  },
+
+  "enable_skill": {
+    "type": "bool",
+    "description": "是否安装 Skill 到 skills 目录",
+    "hint": "启用后将安装 Skill 以供 AstrBot 使用",
+    "default": false
+  },
+
   "extra_body": {
     "type": "text",
     "description": "额外请求体参数（JSON 格式）",
@@ -50,15 +114,6 @@
     "description": "额外请求头（JSON 格式）",
     "hint": "例如: {\"X-Custom-Header\": \"value\"}",
     "default": "{}"
-  },
-  "enable_skill": {
-    "type": "bool",
-    "description": "是否安装 Skill 到 skills 目录（启用后将禁用 LLM Tool）",
-    "default": false
-  },
-  "reuse_session": {
-    "type": "bool",
-    "description": "是否复用 HTTP 会话（高频调用场景可开启以减少连接开销）",
-    "default": false
   }
 }
+
