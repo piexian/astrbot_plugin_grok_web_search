@@ -1,6 +1,6 @@
 name: astrbot_plugin_grok_web_search
 display_name: Grok联网搜索
 desc: 通过 Grok API 进行实时联网搜索，返回综合答案和来源链接，支持指令，LLM Tool和skills调用。
-version: v1.0.4
+version: v1.0.5
 author: piexian
 repo: https://github.com/piexian/astrbot_plugin_grok_web_search

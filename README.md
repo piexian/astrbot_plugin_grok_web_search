@@ -23,20 +23,53 @@
 
 ## 配置
 
+### 供应商设置
+
 | 配置项 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| `base_url` | string | 是 | Grok API 端点 URL |
-| `api_key` | string | 是 | API 密钥 |
-| `model` | string | 否 | 模型名称（默认: grok-4-fast） |
+| `use_builtin_provider` | bool | 否 | 是否使用 AstrBot 自带供应商（默认: false） |
+| `provider` | string | 条件 | 选择已配置的 LLM 供应商（启用自带供应商时必填） |
+| `model` | string | 否 | 模型名称（默认: grok-4-fast，启用自带供应商时使用供应商默认模型） |
+
+### 连接设置
+
+| 配置项 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `base_url` | string | 条件 | Grok API 端点 URL（使用自定义供应商时必填） |
+| `api_key` | string | 条件 | API 密钥（使用自定义供应商时必填） |
+| `timeout_seconds` | int | 否 | 超时时间（默认: 60 秒） |
+| `reuse_session` | bool | 否 | 是否复用 HTTP 会话（高频调用场景可开启，默认: false） |
+
+### 行为设置
+
+| 配置项 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
 | `enable_thinking` | bool | 否 | 是否开启思考模式（默认: true） |
 | `thinking_budget` | int | 否 | 思考 token 预算（默认: 32000） |
-| `timeout_seconds` | int | 否 | 超时时间（默认: 60秒） |
+| `max_retries` | int | 否 | 最大重试次数（默认: 3） |
+| `retry_delay` | float | 否 | 重试间隔时间（默认: 1 秒，范围 0.1-5 秒） |
+| `retryable_status_codes` | list | 否 | 可重试的 HTTP 状态码（默认: [429, 500, 502, 503, 504]） |
+
+### 输出设置
+
+| 配置项 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
 | `show_sources` | bool | 否 | 是否显示来源 URL（默认: false） |
 | `max_sources` | int | 否 | 最大返回来源数量，0 表示不限制（默认: 5） |
+| `custom_system_prompt` | text | 否 | 自定义系统提示词（留空使用默认提示词） |
+
+### Skill 设置
+
+| 配置项 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `enable_skill` | bool | 否 | 是否安装 Skill 到 skills 目录（启用后将禁用 LLM Tool） |
+
+### HTTP 扩展
+
+| 配置项 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
 | `extra_body` | JSON | 否 | 额外请求体参数 |
 | `extra_headers` | JSON | 否 | 额外请求头 |
-| `enable_skill` | bool | 否 | 是否安装 Skill 到 skills 目录（启用后将禁用 LLM Tool） |
-| `reuse_session` | bool | 否 | 是否复用 HTTP 会话（高频调用场景可开启，默认: false） |
 
 ## 使用
 
@@ -45,8 +78,16 @@
 ```
 /grok Python 3.12 有什么新特性
 /grok 最新的 AI 新闻
-/grok help
+/grok help              # 显示帮助和当前配置状态
 ```
+
+> `/grok help` 会显示当前供应商来源、模型、系统提示词类型等配置信息。
+
+### 重试机制
+
+- `/grok` 指令和 LLM Tool 启用自动重试功能
+- 重试仅对自定义 HTTP 客户端生效（通过 `retryable_status_codes` 配置）
+- 使用 AstrBot 自带供应商时，采用异常重试机制（不受 `retryable_status_codes` 限制）
 
 ### LLM Tool
 

@@ -2,6 +2,28 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.0.5] - 2026-02-12
+
+### Added
+- 新增 `use_builtin_provider` 配置项：支持使用 AstrBot 自带供应商
+- 新增 `provider` 配置项：选择已配置的 LLM 供应商（仅当启用自带供应商时生效）
+- 新增 `max_retries` 配置项：最大重试次数（默认: 3）
+- 新增 `retry_delay` 配置项：重试间隔时间（默认: 1 秒，支持滑块调节 0.1-5 秒）
+- 新增 `retryable_status_codes` 配置项：可重试的 HTTP 状态码列表（默认: 429, 500, 502, 503, 504）
+- 新增 `custom_system_prompt` 配置项：自定义系统提示词（支持多行编辑器）
+- `/grok` 指令使用独立的中文系统提示词，要求使用中文回复
+- `/grok help` 显示当前配置状态（供应商来源、模型、提示词类型）
+- 支持延迟初始化：启用自带供应商时，在 AstrBot 加载完成后初始化
+
+### Changed
+- 当启用自带供应商时，自动使用供应商默认模型和参数（不覆盖 model/reasoning 等字段）
+- 重试功能仅对 `/grok` 指令和 LLM Tool 启用，Skill 脚本自行决定是否重试
+- `retryable_status_codes` 仅对自定义 HTTP 客户端生效，内置供应商使用异常重试机制
+- 配置项按功能分组排序：供应商设置、连接设置、行为设置、输出设置、Skill 设置、HTTP 扩展
+
+<details>
+<summary>历史版本</summary>
+
 ## [1.0.4] - 2026-02-03
 
 ### Added
@@ -12,9 +34,6 @@
 ### Changed
 - 默认模型从 `grok-4-expert` 改为 `grok-4-fast`
 - 开启思考模式时自动添加 `reasoning_effort: "high"` 和 `reasoning_budget_tokens` 参数
-
-<details>
-<summary>历史版本</summary>
 
 ## [1.0.3] - 2026-02-02
 
