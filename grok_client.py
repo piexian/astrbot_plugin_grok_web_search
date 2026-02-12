@@ -12,6 +12,15 @@ from typing import Any
 
 import aiohttp
 
+# 默认系统提示词（要求返回 JSON 格式，LLM Tool 和 Skill 使用）
+DEFAULT_JSON_SYSTEM_PROMPT = (
+    "You are a web research assistant. Use live web search/browsing when answering. "
+    "Return ONLY a single JSON object with keys: "
+    "content (string), sources (array of objects with url/title/snippet when possible). "
+    "Keep content concise and evidence-backed. "
+    "IMPORTANT: Do NOT use Markdown formatting in the content field - use plain text only."
+)
+
 
 def normalize_api_key(api_key: str) -> str:
     """过滤占位符 API Key"""
@@ -165,18 +174,9 @@ async def grok_search(
 
     url = f"{normalize_base_url(base_url)}/v1/chat/completions"
 
-    # 默认系统提示词（LLM Tool 和 Skill 使用）
-    default_system_prompt = (
-        "You are a web research assistant. Use live web search/browsing when answering. "
-        "Return ONLY a single JSON object with keys: "
-        "content (string), sources (array of objects with url/title/snippet when possible). "
-        "Keep content concise and evidence-backed. "
-        "IMPORTANT: Do NOT use Markdown formatting in the content field - use plain text only."
-    )
-
     # 使用自定义提示词或默认提示词
     final_system_prompt = (
-        system_prompt if system_prompt is not None else default_system_prompt
+        system_prompt if system_prompt is not None else DEFAULT_JSON_SYSTEM_PROMPT
     )
 
     # 构建请求体：仅当提供 model 时才添加 model 字段（允许供应商/端点使用默认模型）
@@ -350,8 +350,8 @@ async def grok_search(
                     result = await _do_request(temp_session)
 
             # 检查是否需要重试
-            if result.get("ok") or "data" in result:
-                # 成功或解析成功的响应，跳出循环
+            if result.get("ok"):
+                # 成功的响应，跳出循环
                 break
 
             # 检查是否为可重试的错误
@@ -364,7 +364,7 @@ async def grok_search(
 
             if should_retry and attempt < max_retries:
                 retry_count = attempt + 1
-                await asyncio.sleep(retry_delay * (attempt + 1))  # 指数退避
+                await asyncio.sleep(retry_delay * (attempt + 1))  # 线性递增退避
                 continue
 
             # 不可重试的错误，直接返回

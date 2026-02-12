@@ -21,6 +21,7 @@ from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.provider.func_tool_manager import FunctionToolManager
 
 from .grok_client import (
+    DEFAULT_JSON_SYSTEM_PROMPT,
     grok_search,
     normalize_api_key,
     normalize_base_url,
@@ -28,15 +29,6 @@ from .grok_client import (
 )
 
 PLUGIN_NAME = "astrbot_plugin_grok_web_search"
-
-# 默认系统提示词（要求返回 JSON 格式）
-DEFAULT_JSON_SYSTEM_PROMPT = (
-    "You are a web research assistant. Use live web search/browsing when answering. "
-    "Return ONLY a single JSON object with keys: "
-    "content (string), sources (array of objects with url/title/snippet when possible). "
-    "Keep content concise and evidence-backed. "
-    "IMPORTANT: Do NOT use Markdown formatting in the content field - use plain text only."
-)
 
 
 class GrokSearchPlugin(Star):
@@ -231,7 +223,6 @@ class GrokSearchPlugin(Star):
         query: str,
         system_prompt: str | None = None,
         use_retry: bool = False,
-        umo: str | None = None,
     ) -> dict:
         """执行搜索
 
@@ -529,7 +520,6 @@ class GrokSearchPlugin(Star):
             query,
             system_prompt=cmd_system_prompt,
             use_retry=True,
-            umo=event.unified_msg_origin,
         )
         yield event.plain_result(self._format_result(result))
 
@@ -543,7 +533,7 @@ class GrokSearchPlugin(Star):
             query(string): 搜索查询内容，应该是清晰具体的问题或关键词
         """
         result = await self._do_search(
-            query, use_retry=True, umo=event.unified_msg_origin
+            query, use_retry=True
         )
         return self._format_result_for_llm(result)
 
