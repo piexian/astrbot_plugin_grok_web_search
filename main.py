@@ -457,7 +457,11 @@ class GrokSearchPlugin(Star):
         """返回帮助文本"""
         use_builtin = self.config.get("use_builtin_provider", False)
         mode = "AstrBot 自带" if use_builtin else "自定义"
-        provider_id = self.config.get("provider", "") or "未配置"
+        provider_id = (
+            (self.config.get("provider", "") or "未配置")
+            if use_builtin
+            else (self.config.get("base_url", "") or "未配置")
+        )
         model = (
             "由供应商决定"
             if use_builtin
@@ -524,6 +528,7 @@ class GrokSearchPlugin(Star):
             system_prompt=cmd_system_prompt,
             use_retry=True,
         )
+        event.should_call_llm(True)
         yield event.plain_result(self._format_result(result))
 
     @filter.llm_tool(name="grok_web_search")
@@ -535,7 +540,7 @@ class GrokSearchPlugin(Star):
         Args:
             query(string): 搜索查询内容，应该是清晰具体的问题或关键词
         """
-        result = await self._do_search(query, use_retry=True)
+        result = await self._do_search(query, use_retry=False)
         return self._format_result_for_llm(result)
 
     @filter.on_llm_request()

@@ -7,7 +7,7 @@
 ### Added
 - 新增 `use_builtin_provider` 配置项：支持使用 AstrBot 自带供应商
 - 新增 `provider` 配置项：选择已配置的 LLM 供应商（仅当启用自带供应商时生效）
-- 新增 `max_retries` 配置项：最大重试次数（默认: 3）
+- 新增 `max_retries` 配置项：最大重试次数（默认: 3，支持滑块调节 0-10）
 - 新增 `retry_delay` 配置项：重试间隔时间（默认: 1 秒，支持滑块调节 0.1-5 秒）
 - 新增 `retryable_status_codes` 配置项：可重试的 HTTP 状态码列表（默认: 429, 500, 502, 503, 504）
 - 新增 `custom_system_prompt` 配置项：自定义系统提示词（支持多行编辑器）
@@ -17,9 +17,15 @@
 
 ### Changed
 - 当启用自带供应商时，自动使用供应商默认模型和参数（不覆盖 model/reasoning 等字段）
-- 重试功能仅对 `/grok` 指令和 LLM Tool 启用，Skill 脚本自行决定是否重试
+- 重试功能仅对 `/grok` 指令启用，LLM Tool 不再自动重试（由 AI 自行决定是否重新调用）
 - `retryable_status_codes` 仅对自定义 HTTP 客户端生效，内置供应商使用异常重试机制
-- 配置项按功能分组排序：供应商设置、连接设置、行为设置、输出设置、Skill 设置、HTTP 扩展
+- 内置供应商重试延迟改为线性退避策略（`retry_delay * attempts`），与外部客户端行为一致
+- 配置项描述和提示信息拆分为 `description` + `hint`，提升可读性
+- 简化 `max_retries` / `retry_delay` 配置解析逻辑，由 UI 滑块约束输入范围
+
+### Fixed
+- 修复 `/grok` 指令发送失败后 LLM 兜底重复调用 `grok_web_search` 的问题
+- 修复自定义供应商模式下 `/grok help` 仍显示内置供应商名称的问题
 
 <details>
 <summary>历史版本</summary>

@@ -85,8 +85,9 @@
 
 ### 重试机制
 
-- `/grok` 指令和 LLM Tool 启用自动重试功能
-- 重试仅对自定义 HTTP 客户端生效（通过 `retryable_status_codes` 配置）
+- `/grok` 指令启用自动重试功能，使用线性退避策略（`retry_delay * 重试次数`）
+- LLM Tool 不自动重试，失败立即返回，由 AI 自行决定是否重新调用
+- 重试仅对自定义 HTTP 客户端通过 `retryable_status_codes` 匹配状态码
 - 使用 AstrBot 自带供应商时，采用异常重试机制（不受 `retryable_status_codes` 限制）
 
 ### LLM Tool
