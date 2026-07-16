@@ -2,6 +2,11 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.5.1] - 2026-07-16
+
+### Fixed
+- **LLM Tool 路径 ContextWrapper 兼容**：`_extract_content_from_event` 和 `_message_has_quoted` 在 LLM Tool 调用路径（传入 `ContextWrapper` 而非 `AstrMessageEvent`）中 `get_messages()` 缺失导致 `AttributeError`，改为 try/except 优雅降级
+
 ## [1.5.0] - 2026-05-21
 
 ### Added
