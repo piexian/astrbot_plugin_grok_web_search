@@ -201,7 +201,12 @@ class GrokSearchPlugin(Star):
             - text: extracted text from the message chain (or None)
             - images: list of base64-encoded image strings (without prefix)
         """
-        chain = event.get_messages()
+        try:
+            chain = event.get_messages()
+        except AttributeError:
+            # LLM Tool 路径传入的是 ContextWrapper（仅有 .messages 属性），
+            # 不是原始 AstrMessageEvent（有 .get_messages() 方法），无需提取消息链内容
+            return None, []
         text: str | None = None
         image_refs: list[str] = []
 
@@ -811,9 +816,14 @@ class GrokSearchPlugin(Star):
     @staticmethod
     def _message_has_quoted(event: AstrMessageEvent) -> bool:
         """Return True if the message chain contains a quoted/forwarded component."""
+        try:
+            messages = event.get_messages()
+        except AttributeError:
+            # LLM Tool 路径传入 ContextWrapper，无 get_messages() 方法
+            return False
         return any(
             isinstance(comp, (Reply, Forward, Node, Nodes))
-            for comp in event.get_messages()
+            for comp in messages
         )
 
     @filter.command("grok")

@@ -76,3 +76,21 @@ jobs:
       - name: Validate _conf_schema.json
         run: |
           python -c "import json; json.load(open('_conf_schema.json',encoding='utf-8')); print('_conf_schema.json OK')"
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install pytest pytest-asyncio
+
+      - name: Run tests
+        run: pytest tests/ -v
