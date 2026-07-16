@@ -205,7 +205,8 @@ class GrokSearchPlugin(Star):
             chain = event.get_messages()
         except AttributeError:
             # LLM Tool 路径传入的是 ContextWrapper（仅有 .messages 属性），
-            # 不是原始 AstrMessageEvent（有 .get_messages() 方法），无需提取消息链内容
+            # 不是原始 AstrMessageEvent（有 .get_messages() 方法）
+            # 只捕获方法缺失的情况，避免吞掉 get_messages() 内部的 AttributeError
             return None, []
         text: str | None = None
         image_refs: list[str] = []
@@ -820,6 +821,7 @@ class GrokSearchPlugin(Star):
             messages = event.get_messages()
         except AttributeError:
             # LLM Tool 路径传入 ContextWrapper，无 get_messages() 方法
+            # 只捕获方法缺失的情况，避免吞掉 get_messages() 内部的 AttributeError
             return False
         return any(
             isinstance(comp, (Reply, Forward, Node, Nodes))
