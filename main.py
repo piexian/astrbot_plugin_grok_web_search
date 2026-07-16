@@ -206,8 +206,7 @@ class GrokSearchPlugin(Star):
         except AttributeError:
             # LLM Tool 路径传入的是 ContextWrapper（仅有 .messages 属性），
             # 不是原始 AstrMessageEvent（有 .get_messages() 方法）
-            # 只捕获方法缺失的情况，避免吞掉 get_messages() 内部的 AttributeError
-            return None, []
+            chain = getattr(event, "messages", [])
         text: str | None = None
         image_refs: list[str] = []
 
@@ -816,13 +815,16 @@ class GrokSearchPlugin(Star):
 
     @staticmethod
     def _message_has_quoted(event: AstrMessageEvent) -> bool:
-        """Return True if the message chain contains a quoted/forwarded component."""
+        """Return True if the message chain contains a quoted/forwarded component.
+
+        Also accepts non-AstrMessageEvent objects (e.g. ContextWrapper) that
+        expose a ``.messages`` property instead of ``.get_messages()``.
+        """
         try:
             messages = event.get_messages()
         except AttributeError:
             # LLM Tool 路径传入 ContextWrapper，无 get_messages() 方法
-            # 只捕获方法缺失的情况，避免吞掉 get_messages() 内部的 AttributeError
-            return False
+            messages = getattr(event, "messages", [])
         return any(
             isinstance(comp, (Reply, Forward, Node, Nodes))
             for comp in messages

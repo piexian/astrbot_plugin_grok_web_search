@@ -182,9 +182,14 @@ class TestMessageHasQuoted:
 
     # -- ContextWrapper compat ------------------------------------------------
 
-    def test_context_wrapper_no_get_messages_returns_false(self):
-        """ContextWrapper has .messages but no .get_messages() → False."""
+    def test_context_wrapper_with_chain_components_detected(self):
+        """ContextWrapper with .messages containing Reply → still works."""
         event = FakeContextWrapperEvent(messages=[Reply("id")])
+        assert GrokSearchPlugin._message_has_quoted(event) is True
+
+    def test_context_wrapper_with_non_component_messages_returns_false(self):
+        """ContextWrapper with non-chain messages (e.g. LLM history) → False."""
+        event = FakeContextWrapperEvent(messages=[object()])
         assert GrokSearchPlugin._message_has_quoted(event) is False
 
 
@@ -209,11 +214,11 @@ class TestExtractContentFromEvent:
     # -- ContextWrapper compat ------------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_context_wrapper_returns_empty_tuple(self, plugin):
-        """When get_messages() raises AttributeError, return (None, [])."""
-        event = FakeContextWrapperEvent()
+    async def test_context_wrapper_falls_back_to_messages(self, plugin):
+        """When get_messages() fails, fall back to event.messages."""
+        event = FakeContextWrapperEvent()  # empty messages
         text, images = await plugin._extract_content_from_event(event)
-        assert text is None
+        assert text == ""  # mock chain_parser returns ""
         assert images == []
 
     # -- Normal event path (smoke tests) --------------------------------------
