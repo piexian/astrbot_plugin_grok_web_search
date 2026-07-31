@@ -24,6 +24,7 @@ from tool import (  # noqa: E402
     resolve_mode_model,
     resolve_reasoning_params,
     resolve_search_mode,
+    strip_stream_decorations,
 )
 from tool import (  # noqa: E402
     coerce_json_object as _coerce_json_object,
@@ -930,7 +931,7 @@ def main() -> int:
     raw = ""
 
     if parsed is not None:
-        content = str(parsed.get("content") or "")
+        content = strip_stream_decorations(str(parsed.get("content") or ""))
         src = parsed.get("sources")
         if isinstance(src, list):
             for item in src:
@@ -948,7 +949,7 @@ def main() -> int:
     else:
         # 非 JSON 响应：将原始消息作为 content
         raw = message
-        content = message
+        content = strip_stream_decorations(message)
         for url in _extract_urls(message):
             sources.append({"url": url, "title": "", "snippet": ""})
 

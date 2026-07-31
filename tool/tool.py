@@ -30,6 +30,27 @@ DEFAULT_JSON_SYSTEM_PROMPT = (
     "IMPORTANT: Do NOT use Markdown formatting in the content field - use plain text only."
 )
 
+# /grok 指令内置提示词：文本模式（直接发消息，QQ 等渠道不渲染 Markdown，要求纯文本）
+CMD_TEXT_SYSTEM_PROMPT = (
+    "You are a web research assistant. Use live web search/browsing when answering. "
+    "Return ONLY a single JSON object with keys: "
+    "content (string), sources (array of objects with url/title/snippet when possible). "
+    "Keep content concise and evidence-backed. "
+    "IMPORTANT: Respond in Chinese. Do NOT use Markdown formatting in the content field - use plain text only. "
+    "Keep proper nouns and names in their original language."
+)
+
+# /grok 指令内置提示词：图片卡片模式（卡片渲染器按标题分面板，要求结构化 Markdown）
+CMD_CARD_SYSTEM_PROMPT = (
+    "You are a web research assistant. Use live web search/browsing when answering. "
+    "Return ONLY a single JSON object with keys: "
+    "content (string), sources (array of objects with url/title/snippet when possible). "
+    "Format the content field as clean, well-structured Markdown: "
+    "open with a one-line direct answer, then split the body into short sections using '## ' headings, "
+    "use '- ' bullet lists for enumerations and '**bold**' for key terms. "
+    "Keep paragraphs short; never output a single dense wall of text. "
+    "IMPORTANT: Respond in Chinese. Keep proper nouns and names in their original language."
+)
 # 网页内容抓取提示词
 FETCH_SYSTEM_PROMPT = (
     "You are a web content extraction expert. "
@@ -686,6 +707,57 @@ def format_http_error(
     return result
 
 
+# ─── 正文装饰清理 ───────────────────────────────────────
+# 部分中转/转发端点会把 Grok 实时搜索的终端风格装饰行泄漏进正文，
+# 例如 "[ GROK DATA STREAM :: SEARCH ]"、"SYS.STATUS: ONLINE"，以及结尾的
+# "MODEL :: ..."、"38.8s · 23185 tokens"。这些行在卡片与文本模式下都会渲染成噪音，
+# 这里保守地清理正文首尾的装饰行（中间正文绝不动）。
+
+# 首部和尾部的装饰行模式
+_RE_STREAM_HEAD = re.compile(
+    r"^\s*(?:\[\s*GROK[\s_]*DATA[\s_]*STREAM[^\]]*\]|SYS\.STATUS\s*:.*)$",
+    re.IGNORECASE,
+)
+_RE_STREAM_TAIL = re.compile(
+    r"^\s*(?:MODEL\s*::.*|\d+(?:\.\d+)?\s*s\s*[·•|]\s*\d[\d,]*\s*tokens?)$",
+    re.IGNORECASE,
+)
+# 首尾各自最多清理的装饰行数，防止误伤正常正文
+_STREAM_STRIP_MAX = 6
+
+
+def strip_stream_decorations(text: str) -> str:
+    """保守清理中转端点泄漏进正文的 Grok 实时搜索终端装饰行。
+
+    仅处理正文最前端与最末端连续的装饰行（含相邻空行），中间内容永不改动。
+    未匹配到任何装饰行、或清理后会导致正文为空时，原样返回。
+    """
+    if not text or not text.strip():
+        return text
+    lines = text.split("\n")
+    n = len(lines)
+
+    head = 0
+    while head < n and head < _STREAM_STRIP_MAX:
+        line = lines[head]
+        if not line.strip() or _RE_STREAM_HEAD.match(line):
+            head += 1
+        else:
+            break
+
+    tail = n
+    while tail > head and (n - tail) < _STREAM_STRIP_MAX:
+        line = lines[tail - 1]
+        if not line.strip() or _RE_STREAM_TAIL.match(line):
+            tail -= 1
+        else:
+            break
+
+    stripped = "\n".join(lines[head:tail])
+    # 安全兜底：清理后正文为空则保留原文
+    return stripped if stripped.strip() else text
+
+
 def parse_sources_from_message(message: str) -> dict[str, Any]:
     """从 LLM 响应消息中解析 content 和 sources。
 
@@ -698,24 +770,33 @@ def parse_sources_from_message(message: str) -> dict[str, Any]:
     raw = ""
 
     if parsed is not None:
-        content = str(parsed.get("content") or "")
+        content = strip_stream_decorations(str(parsed.get("content") or ""))
         src = parsed.get("sources")
+        seen_urls: set[str] = set()
         if isinstance(src, list):
             for item in src:
-                if isinstance(item, dict) and item.get("url"):
-                    sources.append(
-                        {
-                            "url": str(item.get("url")),
-                            "title": str(item.get("title") or ""),
-                            "snippet": str(item.get("snippet") or ""),
-                        }
-                    )
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get("url") or "").strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                sources.append(
+                    {
+                        "url": url,
+                        "title": str(item.get("title") or ""),
+                        "snippet": str(item.get("snippet") or ""),
+                    }
+                )
         if not sources:
             for url_str in extract_urls(content):
+                if url_str in seen_urls:
+                    continue
+                seen_urls.add(url_str)
                 sources.append({"url": url_str, "title": "", "snippet": ""})
     else:
         raw = message
-        content = message
+        content = strip_stream_decorations(message)
         for url_str in extract_urls(message):
             sources.append({"url": url_str, "title": "", "snippet": ""})
 

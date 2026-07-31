@@ -1,6 +1,8 @@
 """tool 包：从子模块 re-export 常用符号，便于 skill 脚本以 ``from tool import X`` 引用。"""
 
 from .tool import (
+    CMD_CARD_SYSTEM_PROMPT,
+    CMD_TEXT_SYSTEM_PROMPT,
     DEFAULT_MODEL,
     FETCH_SYSTEM_PROMPT,
     build_headers,
@@ -26,10 +28,13 @@ from .tool import (
     resolve_search_mode,
     resolve_system_prompt,
     safe_number,
+    strip_stream_decorations,
     validate_config,
 )
 
 __all__ = [
+    "CMD_CARD_SYSTEM_PROMPT",
+    "CMD_TEXT_SYSTEM_PROMPT",
     "DEFAULT_MODEL",
     "FETCH_SYSTEM_PROMPT",
     "build_headers",
@@ -55,5 +60,6 @@ __all__ = [
     "resolve_search_mode",
     "resolve_system_prompt",
     "safe_number",
+    "strip_stream_decorations",
     "validate_config",
 ]

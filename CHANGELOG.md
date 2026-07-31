@@ -2,6 +2,18 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Fixed
+- **卡片渲染正文成“文字墙”**：`/grok` 内置提示词原先一律禁止 Markdown，与图片卡片渲染器（按标题分面板）的格式需求冲突，导致卡片正文渲染成一整块纯文本。现按渲染目标自动选择内置提示词：卡片模式请求结构化 Markdown（`##` 标题 + 列表 + 粗体），文本模式保持纯文本
+- **中转端点装饰行泄漏**：新增 `strip_stream_decorations()` 保守清理中转/转发端点可能泄漏进正文的 `GROK DATA STREAM` / `SYS.STATUS` / `MODEL ::` / `耗时 · tokens` 等终端装饰行（仅动首尾，中间正文不改）
+- **`grok_web_fetch` 工具返回污染上下文**：移除工具返回中追加的 `---\n耗时: Xms` 后缀，该元信息仅对用户有意义，不应进入主模型上下文
+
+### Changed
+- **移除硬编码纯文本返回提示**：删除 `grok_web_search` 工具结果中强制主模型“使用纯文本回复”的追加提示，避免与主模型自身格式策略冲突
+- **提示词常量集中**：新增 `CMD_CARD_SYSTEM_PROMPT` / `CMD_TEXT_SYSTEM_PROMPT` 常量，`/grok` 指令不再内联硬编码提示词
+- **来源链接统一去重**：在共享出口 `parse_sources_from_message()` 对 `sources` 按 url 保序去重（并跳过空白 url），指令 / 工具 / 卡片 / Skill 四条下游一次到位，消除原先仅 `extract_urls` 回退分支去重、主列表不去重的不一致
+
 ## [1.5.0] - 2026-05-21
 
 ### Added
