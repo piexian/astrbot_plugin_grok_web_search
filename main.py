@@ -55,10 +55,13 @@ from .tool.card_render import (
     set_logger as set_card_logger,
 )
 from .tool.tool import (
+    CMD_CARD_SYSTEM_PROMPT,
+    CMD_TEXT_SYSTEM_PROMPT,
     DEFAULT_JSON_SYSTEM_PROMPT,
     DEFAULT_MODEL,
     build_headers,
     build_search_time_constraints,
+    markdown_to_plain,
     normalize_api_key,
     normalize_base_url,
     normalize_search_options,
@@ -92,6 +95,7 @@ CONFIG_PATHS = {
     "extra_headers": ("advanced_settings", "extra_headers"),
     "show_sources": ("output_settings", "show_sources"),
     "render_as_image": ("output_settings", "render_as_image"),
+    "markdown_plain_fallback": ("output_settings", "markdown_plain_fallback"),
     "send_as_forward": ("output_settings", "send_as_forward"),
     "card_theme": ("output_settings", "card_theme"),
     "max_sources": ("output_settings", "max_sources"),
@@ -118,6 +122,7 @@ CONFIG_DEFAULTS = {
     "extra_headers": "",
     "show_sources": False,
     "render_as_image": False,
+    "markdown_plain_fallback": True,
     "send_as_forward": False,
     "card_theme": "auto",
     "max_sources": 5,
@@ -722,8 +727,13 @@ class GrokSearchPlugin(Star):
                     lines.append(f"     {snippet}")
         return lines
 
-    def _format_result(self, result: dict) -> str:
-        """格式化搜索结果为用户友好的消息"""
+    def _format_result(self, result: dict, plain_fallback: bool = False) -> str:
+        """格式化搜索结果为用户友好的消息
+
+        plain_fallback: 卡片模式降级到文本发送时为 True，将结构化 Markdown
+        轻量降级为纯文本，避免在不渲染 Markdown 的渠道显示裸标记。
+        文本模式保持 False，不对纯文本 content 做任何剥离，防止误伤。
+        """
         if not result.get("ok"):
             error = result.get("error", "未知错误")
             return f"搜索失败: {error}"
@@ -732,7 +742,7 @@ class GrokSearchPlugin(Star):
         sources = result.get("sources", [])
         elapsed = result.get("elapsed_ms", 0) / 1000
 
-        lines = [content]
+        lines = [markdown_to_plain(content) if plain_fallback else content]
         lines.extend(self._render_sources(sources, header="来源", with_snippet=False))
 
         # 显示耗时、重试次数和 token 用量
@@ -765,9 +775,6 @@ class GrokSearchPlugin(Star):
         lines.extend(
             self._render_sources(sources, header="参考来源", with_snippet=True)
         )
-
-        # 提示主 LLM 使用纯文本格式回复用户
-        lines.append("\n[提示: 请使用纯文本格式回复用户，不要使用 Markdown 格式]")
 
         return "\n".join(lines)
 
@@ -856,17 +863,13 @@ class GrokSearchPlugin(Star):
         if not query.strip() and images:
             query = "请搜索这张图片的内容"
 
-        # 优先使用自定义提示词，未设置则使用内置提示词（英文指令 + JSON 格式 + 中文回复）
+        # 是否渲染为图片卡片（与后续渲染判定保持一致：render_as_image 且字体就绪）
+        # 卡片模式 → 内置提示词请求结构化 Markdown（卡片渲染器按标题分面板）；文本模式 → 纯文本
+        use_image_card = self._cfg("render_as_image", False) and self._card_fonts_ready
+        # 优先使用自定义提示词，未设置则按渲染目标选择内置提示词
         cmd_system_prompt = resolve_system_prompt(
             self._cfg("custom_system_prompt", ""),
-            (
-                "You are a web research assistant. Use live web search/browsing when answering. "
-                "Return ONLY a single JSON object with keys: "
-                "content (string), sources (array of objects with url/title/snippet when possible). "
-                "Keep content concise and evidence-backed. "
-                "IMPORTANT: Respond in Chinese. Do NOT use Markdown formatting in the content field - use plain text only. "
-                "Keep proper nouns and names in their original language."
-            ),
+            CMD_CARD_SYSTEM_PROMPT if use_image_card else CMD_TEXT_SYSTEM_PROMPT,
         )
 
         result = await self._do_search(
@@ -878,12 +881,12 @@ class GrokSearchPlugin(Star):
         event.should_call_llm(True)
 
         if self._cfg("send_as_forward", False):
-            forward_sent = await self._send_as_forward(event, result)
+            forward_sent = await self._send_as_forward(event, result, use_image_card)
             if forward_sent:
                 return
 
-        # 判断是否以图片卡片形式发送
-        use_image = self._cfg("render_as_image", False) and self._card_fonts_ready
+        # 判断是否以图片卡片形式发送（复用提示词选择时的判定，确保格式与渲染一致）
+        use_image = use_image_card
         image_sent = False
 
         if use_image and result.get("ok"):
@@ -892,11 +895,21 @@ class GrokSearchPlugin(Star):
         # 文本模式或图片发送失败时降级
         if not image_sent:
             try:
-                await event.send(MessageChain().message(self._format_result(result)))
+                await event.send(
+                    MessageChain().message(
+                        self._format_result(
+                            result,
+                            plain_fallback=use_image_card
+                            and self._cfg("markdown_plain_fallback", True),
+                        )
+                    )
+                )
             except Exception as e:
                 logger.warning(f"[{PLUGIN_NAME}] 发送搜索结果失败: {e}")
 
-    async def _send_as_forward(self, event: AstrMessageEvent, result: dict) -> bool:
+    async def _send_as_forward(
+        self, event: AstrMessageEvent, result: dict, use_image_card: bool
+    ) -> bool:
         """使用 OneBot 合并转发发送 /grok 结果。非 OneBot 平台自动降级。"""
         if not self._supports_forward_output(event):
             return False
@@ -904,11 +917,7 @@ class GrokSearchPlugin(Star):
         sender_uin = event.get_self_id()
         nodes: list[Node] = []
 
-        use_image = (
-            self._cfg("render_as_image", False)
-            and self._card_fonts_ready
-            and result.get("ok")
-        )
+        use_image = use_image_card and result.get("ok")
         tmp_path: str | None = None
         try:
             if use_image:
@@ -1144,9 +1153,8 @@ class GrokSearchPlugin(Star):
 
         if result.get("ok"):
             content = result.get("content", "")
-            elapsed = result.get("elapsed_ms", 0)
             if content:
-                return f"{content}\n\n---\n耗时: {elapsed}ms"
+                return content
             return "抓取成功但页面内容为空"
         else:
             error = result.get("error", "未知错误")

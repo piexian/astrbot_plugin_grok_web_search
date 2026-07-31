@@ -56,7 +56,7 @@
 | `max_retries` | int | 否 | 最大重试次数（默认: 3） |
 | `retry_delay` | float | 否 | 重试间隔时间（默认: 1 秒），429 时优先使用 Retry-After 头 |
 | `retryable_status_codes` | list | 否 | 可重试的 HTTP 状态码（默认: [429, 500, 502, 503, 504]） |
-| `custom_system_prompt` | text | 否 | 自定义系统提示词（留空使用默认提示词） |
+| `custom_system_prompt` | text | 否 | 自定义系统提示词；留空时按渲染目标自动选择内置提示词（卡片模式请求结构化 Markdown，文本模式用纯文本） |
 
 ### 输出设置
 
@@ -64,6 +64,7 @@
 |--------|------|------|------|
 | `show_sources` | bool | 否 | 是否显示来源 URL（默认: false） |
 | `render_as_image` | bool | 否 | 是否将搜索结果渲染为图片卡片（默认: false） |
+| `markdown_plain_fallback` | bool | 否 | 卡片渲染/发送失败降级为文本时，是否将结构化 Markdown 转为纯文本（避免裸标记）；仅作用于卡片降级路径，若误伤可关闭（默认: true） |
 | `send_as_forward` | bool | 否 | 将 `/grok` 结果以合并转发发送，仅 OneBot v11/aiocqhttp 支持，其他平台自动降级（默认: false） |
 | `card_theme` | string | 否 | 卡片主题：auto（按时间自动）/ dark / light（默认: auto） |
 | `max_sources` | int | 否 | 最大返回来源数量，0 表示不限制（默认: 5） |
@@ -82,6 +83,8 @@
 启用 `render_as_image` 后，`/grok` 指令的搜索结果将渲染为精美的图片卡片发送：
 
 - **面板式布局**：每个标题自动分割为独立面板，圆角矩形 + 科技青竖条装饰
+- **结构化正文**：卡片模式下内置提示词会要求 Grok 返回带标题/列表的 Markdown，正文按 `##` 标题自动分面板，避免渲染成一大块文字墙
+- **装饰行清理**：自动剥离中转端点可能泄漏进正文的 `GROK DATA STREAM` / `SYS.STATUS` / `MODEL ::` 等终端装饰行
 - **日/夜自动主题**：`card_theme` 为 `auto` 时根据系统时间自动切换（7:00-18:00 浅色）
 - **Markdown 支持**：标题、列表、代码块、引用、**粗体**、`行内代码`
 - **来源链接**：以单独文本消息发送（可点击/复制）

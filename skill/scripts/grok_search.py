@@ -24,6 +24,7 @@ from tool import (  # noqa: E402
     resolve_mode_model,
     resolve_reasoning_params,
     resolve_search_mode,
+    strip_stream_decorations,
 )
 from tool import (  # noqa: E402
     coerce_json_object as _coerce_json_object,
@@ -64,6 +65,7 @@ _CONFIG_PATHS = {
     "extra_headers": ("advanced_settings", "extra_headers"),
     "show_sources": ("output_settings", "show_sources"),
     "render_as_image": ("output_settings", "render_as_image"),
+    "markdown_plain_fallback": ("output_settings", "markdown_plain_fallback"),
     "send_as_forward": ("output_settings", "send_as_forward"),
     "card_theme": ("output_settings", "card_theme"),
     "max_sources": ("output_settings", "max_sources"),
@@ -90,6 +92,7 @@ _CONFIG_DEFAULTS = {
     "extra_headers": "",
     "show_sources": False,
     "render_as_image": False,
+    "markdown_plain_fallback": True,
     "send_as_forward": False,
     "card_theme": "auto",
     "max_sources": 5,
@@ -928,37 +931,54 @@ def main() -> int:
     sources: list[dict[str, Any]] = []
     content = ""
     raw = ""
+    # 去重集合提到分支外，JSON 与非 JSON 两条路径统一按 url 保序去重
+    seen_urls: set[str] = set()
 
     if parsed is not None:
-        content = str(parsed.get("content") or "")
+        content = strip_stream_decorations(str(parsed.get("content") or ""))
         src = parsed.get("sources")
         if isinstance(src, list):
             for item in src:
-                if isinstance(item, dict) and item.get("url"):
-                    sources.append(
-                        {
-                            "url": str(item.get("url")),
-                            "title": str(item.get("title") or ""),
-                            "snippet": str(item.get("snippet") or ""),
-                        }
-                    )
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get("url") or "").strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                sources.append(
+                    {
+                        "url": url,
+                        "title": str(item.get("title") or ""),
+                        "snippet": str(item.get("snippet") or ""),
+                    }
+                )
         if not sources:
             for url in _extract_urls(content):
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
                 sources.append({"url": url, "title": "", "snippet": ""})
     else:
         # 非 JSON 响应：将原始消息作为 content
         raw = message
-        content = message
+        content = strip_stream_decorations(message)
         for url in _extract_urls(message):
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
             sources.append({"url": url, "title": "", "snippet": ""})
 
     # 补充 Responses API 的 citations 到 sources
     if not sources and api_citations:
         for cit in api_citations:
+            url = str(cit.get("url") or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
             sources.append(
                 {
-                    "url": cit.get("url", ""),
-                    "title": cit.get("title", ""),
+                    "url": url,
+                    "title": str(cit.get("title") or ""),
                     "snippet": "",
                 }
             )

@@ -2,6 +2,21 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.5.1] - 2026-08-01
+
+### Fixed
+- **卡片渲染正文成“文字墙”**：`/grok` 内置提示词原先一律禁止 Markdown，与图片卡片渲染器（按标题分面板）的格式需求冲突，导致卡片正文渲染成一整块纯文本。现按渲染目标自动选择内置提示词：卡片模式请求结构化 Markdown（`##` 标题 + 列表 + 粗体），文本模式保持纯文本
+- **中转端点装饰行泄漏**：新增 `strip_stream_decorations()` 保守清理中转/转发端点可能泄漏进正文的 `GROK DATA STREAM` / `SYS.STATUS` / `MODEL ::` / `耗时 · tokens` 等终端装饰行（仅动首尾，中间正文不改）
+- **`grok_web_fetch` 工具返回污染上下文**：移除工具返回中追加的 `---\n耗时: Xms` 后缀，该元信息仅对用户有意义，不应进入主模型上下文
+- **卡片降级文本裸 Markdown**：卡片模式（`render_as_image`）下若卡片渲染/发送失败而降级为文本发送，原先会把结构化 Markdown 原样吐到不渲染 Markdown 的渠道。新增 `markdown_to_plain()` 在该降级路径轻量剥离标记，并以 `markdown_plain_fallback` 配置项作为开关（默认 true，若误伤可关闭）；文本模式不剥离，避免误伤纯文本 content
+
+### Changed
+- **移除硬编码纯文本返回提示**：删除 `grok_web_search` 工具结果中强制主模型“使用纯文本回复”的追加提示，避免与主模型自身格式策略冲突
+- **提示词常量集中**：新增 `CMD_CARD_SYSTEM_PROMPT` / `CMD_TEXT_SYSTEM_PROMPT` 常量，`/grok` 指令不再内联硬编码提示词
+- **来源链接统一去重**：在共享出口 `parse_sources_from_message()` 对 `sources` 按 url 保序去重（并跳过空白 url），指令 / 工具 / 卡片 / Skill 四条下游一次到位，消除原先仅 `extract_urls` 回退分支去重、主列表不去重的不一致
+- **装饰行识别数据驱动化**：`strip_stream_decorations()` 的装饰行判定改为结构模式（方括号内含 `GROK` 字样 / `SYS.STATUS:` / `MODEL ::` / 计量行），容忍拼写与格式变体（如 `GROK_DATA_STREAM`、拼错的 `STREAN`）；清理激进度经 `max_lines` 参数集中可调，并抽出 `_is_stream_head()` / `_is_stream_tail()` 辅助判定
+- **Skill CLI 来源去重对齐**：`skill/scripts/grok_search.py` 的 sources 收集镜像 `parse_sources_from_message()` 的 dict 校验 + url 去重逻辑，CLI 与插件输出行为一致
+
 ## [1.5.0] - 2026-05-21
 
 ### Added
