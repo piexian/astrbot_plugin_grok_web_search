@@ -64,6 +64,7 @@
 |--------|------|------|------|
 | `show_sources` | bool | 否 | 是否显示来源 URL（默认: false） |
 | `render_as_image` | bool | 否 | 是否将搜索结果渲染为图片卡片（默认: false） |
+| `markdown_plain_fallback` | bool | 否 | 卡片渲染/发送失败降级为文本时，是否将结构化 Markdown 转为纯文本（避免裸标记）；仅作用于卡片降级路径，若误伤可关闭（默认: true） |
 | `send_as_forward` | bool | 否 | 将 `/grok` 结果以合并转发发送，仅 OneBot v11/aiocqhttp 支持，其他平台自动降级（默认: false） |
 | `card_theme` | string | 否 | 卡片主题：auto（按时间自动）/ dark / light（默认: auto） |
 | `max_sources` | int | 否 | 最大返回来源数量，0 表示不限制（默认: 5） |

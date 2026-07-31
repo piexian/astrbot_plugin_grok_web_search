@@ -712,43 +712,65 @@ def format_http_error(
 # 例如 "[ GROK DATA STREAM :: SEARCH ]"、"SYS.STATUS: ONLINE"，以及结尾的
 # "MODEL :: ..."、"38.8s · 23185 tokens"。这些行在卡片与文本模式下都会渲染成噪音，
 # 这里保守地清理正文首尾的装饰行（中间正文绝不动）。
+#
+# 装饰行的识别采用“结构模式”而非逐字硬编码，以容忍拼写/格式变体
+# （例如把 STREAM 误拼成 STREAN）。如需支持新变体，调整下方两条正则即可，
+# 无需改动 strip_stream_decorations 的清理逻辑。
 
-# 首部和尾部的装饰行模式
+# 首部装饰：方括号包裹且含 GROK 词的流标识，或 SYS.STATUS 状态行
 _RE_STREAM_HEAD = re.compile(
-    r"^\s*(?:\[\s*GROK[\s_]*DATA[\s_]*STREAM[^\]]*\]|SYS\.STATUS\s*:.*)$",
+    r"^\s*(?:\[[^\]]*GROK[^\]]*\]|SYS\.STATUS\s*:)",
     re.IGNORECASE,
 )
+# 尾部装饰：MODEL :: 计量行，或 "耗时 · tokens" 计量行（容忍 s/秒 与 ·/•/| 分隔变体）
 _RE_STREAM_TAIL = re.compile(
-    r"^\s*(?:MODEL\s*::.*|\d+(?:\.\d+)?\s*s\s*[·•|]\s*\d[\d,]*\s*tokens?)$",
+    r"^\s*(?:MODEL\s*::|\d+(?:\.\d+)?\s*s\s*[·•|]\s*\d[\d,]*\s*tokens?)",
     re.IGNORECASE,
 )
-# 首尾各自最多清理的装饰行数，防止误伤正常正文
+# 首尾各自最多扫描的装饰行数（清理激进度上限），防止误伤正常正文
 _STREAM_STRIP_MAX = 6
 
 
-def strip_stream_decorations(text: str) -> str:
+def _is_stream_head(line: str) -> bool:
+    """该行是否为 Grok 实时搜索的首部终端装饰行。"""
+    return bool(_RE_STREAM_HEAD.match(line))
+
+
+def _is_stream_tail(line: str) -> bool:
+    """该行是否为 Grok 实时搜索的尾部终端装饰行。"""
+    return bool(_RE_STREAM_TAIL.match(line))
+
+
+def strip_stream_decorations(text: str, max_lines: int = _STREAM_STRIP_MAX) -> str:
     """保守清理中转端点泄漏进正文的 Grok 实时搜索终端装饰行。
 
     仅处理正文最前端与最末端连续的装饰行（含相邻空行），中间内容永不改动。
     未匹配到任何装饰行、或清理后会导致正文为空时，原样返回。
+
+    Args:
+        text: 待清理的正文。
+        max_lines: 首/尾各自最多扫描的装饰行数，控制清理激进度；<=0 表示不清理。
+            调用方可在不改动核心逻辑的前提下调整该值。
     """
     if not text or not text.strip():
+        return text
+    if max_lines <= 0:
         return text
     lines = text.split("\n")
     n = len(lines)
 
     head = 0
-    while head < n and head < _STREAM_STRIP_MAX:
+    while head < n and head < max_lines:
         line = lines[head]
-        if not line.strip() or _RE_STREAM_HEAD.match(line):
+        if not line.strip() or _is_stream_head(line):
             head += 1
         else:
             break
 
     tail = n
-    while tail > head and (n - tail) < _STREAM_STRIP_MAX:
+    while tail > head and (n - tail) < max_lines:
         line = lines[tail - 1]
-        if not line.strip() or _RE_STREAM_TAIL.match(line):
+        if not line.strip() or _is_stream_tail(line):
             tail -= 1
         else:
             break
@@ -768,11 +790,12 @@ def parse_sources_from_message(message: str) -> dict[str, Any]:
     sources: list[dict[str, Any]] = []
     content = ""
     raw = ""
+    # 去重集合提到分支外，JSON 与非 JSON 两条路径统一按 url 保序去重
+    seen_urls: set[str] = set()
 
     if parsed is not None:
         content = strip_stream_decorations(str(parsed.get("content") or ""))
         src = parsed.get("sources")
-        seen_urls: set[str] = set()
         if isinstance(src, list):
             for item in src:
                 if not isinstance(item, dict):
@@ -798,9 +821,45 @@ def parse_sources_from_message(message: str) -> dict[str, Any]:
         raw = message
         content = strip_stream_decorations(message)
         for url_str in extract_urls(message):
+            if url_str in seen_urls:
+                continue
+            seen_urls.add(url_str)
             sources.append({"url": url_str, "title": "", "snippet": ""})
 
     return {"content": content, "sources": sources, "raw": raw}
+
+
+# ─── Markdown → 纯文本降级 ───────────────────────────────
+# 卡片模式请求结构化 Markdown；当卡片渲染/发送失败降级到文本发送时，
+# QQ 等渠道不渲染 Markdown，需把标记轻量去除以免原样吐出。
+
+_RE_MD_HEADING = re.compile(r"^#{1,6}\s+")
+_RE_MD_QUOTE = re.compile(r"^>\s?")
+_RE_MD_BULLET = re.compile(r"^[\-*+]\s+")
+_RE_MD_ORDERED = re.compile(r"^\d+\.\s+")
+_RE_MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_RE_MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
+_RE_MD_CODE = re.compile(r"`([^`]+)`")
+
+
+def markdown_to_plain(text: str) -> str:
+    """将结构化 Markdown 轻量降级为纯文本。
+
+    去除行首的标题/引用/列表前缀与行内的链接/粗体/行内代码标记。
+    仅用于卡片模式降级到文本发送的场景；对无标记文本基本幂等。
+    """
+    if not text:
+        return text
+    out: list[str] = []
+    for line in text.split("\n"):
+        s = line
+        for pat in (_RE_MD_HEADING, _RE_MD_QUOTE, _RE_MD_BULLET, _RE_MD_ORDERED):
+            s = pat.sub("", s, count=1)
+        s = _RE_MD_LINK.sub(r"\1 (\2)", s)
+        s = _RE_MD_BOLD.sub(r"\1", s)
+        s = _RE_MD_CODE.sub(r"\1", s)
+        out.append(s)
+    return "\n".join(out)
 
 
 async def retry_request(

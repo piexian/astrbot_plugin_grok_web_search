@@ -138,6 +138,12 @@
         "hint": "启用后 /grok 指令的结果将以精美图片卡片形式发送，来源链接单独以文本发送",
         "default": false
       },
+      "markdown_plain_fallback": {
+        "type": "bool",
+        "description": "卡片降级文本时剥离 Markdown 标记",
+        "hint": "开启 render_as_image 后，若卡片渲染/发送失败而降级为文本发送，是否将结构化 Markdown 转为纯文本，避免在 QQ 等不渲染 Markdown 的渠道显示裸标记；若观察到误伤可关闭。仅作用于卡片降级路径，文本模式不受影响",
+        "default": true
+      },
       "send_as_forward": {
         "type": "bool",
         "description": "是否将 /grok 结果以合并转发发送",

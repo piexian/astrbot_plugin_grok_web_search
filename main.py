@@ -61,6 +61,7 @@ from .tool.tool import (
     DEFAULT_MODEL,
     build_headers,
     build_search_time_constraints,
+    markdown_to_plain,
     normalize_api_key,
     normalize_base_url,
     normalize_search_options,
@@ -94,6 +95,7 @@ CONFIG_PATHS = {
     "extra_headers": ("advanced_settings", "extra_headers"),
     "show_sources": ("output_settings", "show_sources"),
     "render_as_image": ("output_settings", "render_as_image"),
+    "markdown_plain_fallback": ("output_settings", "markdown_plain_fallback"),
     "send_as_forward": ("output_settings", "send_as_forward"),
     "card_theme": ("output_settings", "card_theme"),
     "max_sources": ("output_settings", "max_sources"),
@@ -120,6 +122,7 @@ CONFIG_DEFAULTS = {
     "extra_headers": "",
     "show_sources": False,
     "render_as_image": False,
+    "markdown_plain_fallback": True,
     "send_as_forward": False,
     "card_theme": "auto",
     "max_sources": 5,
@@ -724,8 +727,13 @@ class GrokSearchPlugin(Star):
                     lines.append(f"     {snippet}")
         return lines
 
-    def _format_result(self, result: dict) -> str:
-        """格式化搜索结果为用户友好的消息"""
+    def _format_result(self, result: dict, plain_fallback: bool = False) -> str:
+        """格式化搜索结果为用户友好的消息
+
+        plain_fallback: 卡片模式降级到文本发送时为 True，将结构化 Markdown
+        轻量降级为纯文本，避免在不渲染 Markdown 的渠道显示裸标记。
+        文本模式保持 False，不对纯文本 content 做任何剥离，防止误伤。
+        """
         if not result.get("ok"):
             error = result.get("error", "未知错误")
             return f"搜索失败: {error}"
@@ -734,7 +742,7 @@ class GrokSearchPlugin(Star):
         sources = result.get("sources", [])
         elapsed = result.get("elapsed_ms", 0) / 1000
 
-        lines = [content]
+        lines = [markdown_to_plain(content) if plain_fallback else content]
         lines.extend(self._render_sources(sources, header="来源", with_snippet=False))
 
         # 显示耗时、重试次数和 token 用量
@@ -887,7 +895,15 @@ class GrokSearchPlugin(Star):
         # 文本模式或图片发送失败时降级
         if not image_sent:
             try:
-                await event.send(MessageChain().message(self._format_result(result)))
+                await event.send(
+                    MessageChain().message(
+                        self._format_result(
+                            result,
+                            plain_fallback=use_image_card
+                            and self._cfg("markdown_plain_fallback", True),
+                        )
+                    )
+                )
             except Exception as e:
                 logger.warning(f"[{PLUGIN_NAME}] 发送搜索结果失败: {e}")
 
