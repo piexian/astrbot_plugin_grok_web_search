@@ -19,8 +19,10 @@ if _PLUGIN_DIR not in sys.path:
 from tool import (  # noqa: E402
     DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
     DEFAULT_IMAGE_SEARCH_TIMEOUT,
+    DEFAULT_JSON_SYSTEM_PROMPT,
     DEFAULT_MODEL,
     FETCH_SYSTEM_PROMPT,
+    build_search_query,
     build_search_time_constraints,
     format_evidence,
     get_local_time_info,
@@ -28,6 +30,7 @@ from tool import (  # noqa: E402
     resolve_mode_model,
     resolve_reasoning_params,
     resolve_search_mode,
+    resolve_system_prompt,
     run_reverse_image_search,
     strip_stream_decorations,
 )
@@ -364,13 +367,7 @@ def _request_chat_completions(
 ) -> dict[str, Any]:
     url = f"{_normalize_base_url(base_url)}/v1/chat/completions"
 
-    system = system_prompt or (
-        "You are a web research assistant. Use live web search/browsing when answering. "
-        "Return ONLY a single JSON object with keys: "
-        "content (string), sources (array of objects with url/title/snippet when possible). "
-        "Keep content concise and evidence-backed. "
-        "IMPORTANT: Do NOT use Markdown formatting in the content field - use plain text only."
-    )
+    system = system_prompt if system_prompt is not None else DEFAULT_JSON_SYSTEM_PROMPT
 
     # 注入时间上下文
     time_context = get_local_time_info()
@@ -468,17 +465,12 @@ def _request_responses_api(
     extra_headers: dict[str, Any],
     extra_body: dict[str, Any],
     images: list[str] | None = None,
+    system_prompt: str | None = None,
 ) -> dict[str, Any]:
     """通过 xAI Responses API (/v1/responses) 发起搜索请求"""
     url = f"{_normalize_base_url(base_url)}/v1/responses"
 
-    system = (
-        "You are a web research assistant. Use live web search/browsing when answering. "
-        "Return ONLY a single JSON object with keys: "
-        "content (string), sources (array of objects with url/title/snippet when possible). "
-        "Keep content concise and evidence-backed. "
-        "IMPORTANT: Do NOT use Markdown formatting in the content field - use plain text only."
-    )
+    system = system_prompt if system_prompt is not None else DEFAULT_JSON_SYSTEM_PROMPT
 
     # 注入时间上下文
     time_context = get_local_time_info()
@@ -585,9 +577,22 @@ def _parse_responses_api_result(
     return message, citations
 
 
+def _write_output(result: dict[str, Any], mode: str, evidence_text: str = "") -> None:
+    """LLM 输出仅保留证据字段，默认 JSON 输出保持兼容。"""
+    if mode == "llm":
+        result = {
+            key: result[key]
+            for key in ("ok", "content", "sources", "fetch_url", "error")
+            if key in result
+        }
+        if evidence_text:
+            result["evidence"] = evidence_text
+    sys.stdout.write(_compact_json(result))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Aggressive web research via OpenAI-compatible Grok endpoint."
+        description="Web research, webpage reading and image-source lookup via Grok."
     )
     parser.add_argument("--query", default="", help="Search query / research task.")
     parser.add_argument("--config", default="", help="Path to config JSON file.")
@@ -603,31 +608,31 @@ def main() -> int:
         dest="search_depth",
         type=str,
         default="",
-        help="Search depth: basic, advanced, or deep (--depth is an alias).",
+        help="basic: fact check; advanced: multi-part research; deep: complex/conflicting evidence.",
     )
     parser.add_argument(
         "--max-results",
         type=int,
         default=0,
-        help="Desired number of results (5-20).",
+        help="Target source count (5-20), not a guaranteed number of results.",
     )
     parser.add_argument(
         "--topic",
         type=str,
         default="",
-        help="Search topic: general or news.",
+        help="general or news; news without time options defaults to the last 7 days.",
     )
     parser.add_argument(
         "--days",
         type=int,
         default=0,
-        help="Days to look back from today.",
+        help="Look back 1-365 days for either topic; overridden by time-range or explicit dates.",
     )
     parser.add_argument(
         "--time-range",
         type=str,
         default="",
-        help="Time range: day, week, month, or year.",
+        help="Research window: day (today), week (7d), month (30d), year (365d); dates take precedence.",
     )
     parser.add_argument(
         "--start-date",
@@ -659,22 +664,28 @@ def main() -> int:
     parser.add_argument(
         "--fetch-url",
         default="",
-        help="URL to fetch and convert to Markdown (fetch mode, replaces --query).",
+        help="Read accessible webpage content as Markdown; may fail or be partial.",
     )
     parser.add_argument(
         "--serpapi",
         action="store_true",
-        help="Enable Google Lens reverse image search (needs configured key).",
+        help="Find matching images, source pages or product/place clues with Google Lens.",
     )
     parser.add_argument(
         "--saucenao",
         action="store_true",
-        help="Enable SauceNAO reverse image search (needs configured key).",
+        help="Find original artwork, artists or anime/manga sources with SauceNAO.",
     )
     parser.add_argument(
         "--all",
         action="store_true",
         help="Enable both reverse image backends and force deep search depth.",
+    )
+    parser.add_argument(
+        "--output",
+        choices=("json", "llm"),
+        default="json",
+        help="Output mode: llm keeps evidence only; json preserves diagnostic fields.",
     )
     args = parser.parse_args()
 
@@ -894,28 +905,23 @@ def main() -> int:
             start_date=start_date,
             end_date=end_date,
         )
-        if time_constraints:
-            query = f"{time_constraints}\n{query}"
-
-        depth_guide = {
-            "basic": "Provide a quick, concise overview.",
-            "advanced": "Conduct thorough research with multiple sources.",
-            "deep": "Perform an exhaustive, in-depth analysis with maximum sources.",
-        }.get(search_depth, "")
-        if depth_guide:
-            query = (
-                f"[Search Guide]\n"
-                f"- Depth: {search_depth} ({depth_guide})\n"
-                f"- Desired results: {max_results}\n"
-                f"\n{query}"
-            )
+        query = build_search_query(query, search_depth, max_results, time_constraints)
 
         # 反向搜图证据附加在查询末尾，供 Grok 核验；失败/跳过说明一并提供
         if evidence_text:
             query = f"{query}\n\n{evidence_text}"
 
+    system_prompt = (
+        FETCH_SYSTEM_PROMPT
+        if is_fetch_mode
+        else resolve_system_prompt(
+            _cfg(config, "custom_system_prompt"), DEFAULT_JSON_SYSTEM_PROMPT
+        )
+    )
+    request_uses_responses = use_responses_api and not is_fetch_mode
+
     try:
-        if use_responses_api and not is_fetch_mode:
+        if request_uses_responses:
             resp = _request_responses_api(
                 base_url=base_url,
                 api_key=api_key,
@@ -925,6 +931,7 @@ def main() -> int:
                 extra_headers=extra_headers,
                 extra_body=extra_body,
                 images=images or None,
+                system_prompt=system_prompt,
             )
         else:
             # Chat Completions 模式（search 和 fetch 都用这个）
@@ -944,7 +951,7 @@ def main() -> int:
                 extra_headers=extra_headers,
                 extra_body=extra_body,
                 images=images or None,
-                system_prompt=FETCH_SYSTEM_PROMPT if is_fetch_mode else None,
+                system_prompt=system_prompt,
             )
     except urllib.error.HTTPError as e:
         raw = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
@@ -957,7 +964,7 @@ def main() -> int:
             "model": model,
             "elapsed_ms": int((time.time() - started) * 1000),
         }
-        sys.stdout.write(_compact_json(out))
+        _write_output(out, args.output, evidence_text)
         return 1
     except Exception as e:
         out = {
@@ -969,7 +976,7 @@ def main() -> int:
             "model": model,
             "elapsed_ms": int((time.time() - started) * 1000),
         }
-        sys.stdout.write(_compact_json(out))
+        _write_output(out, args.output, evidence_text)
         return 1
 
     # 检查 API 错误响应
@@ -989,14 +996,14 @@ def main() -> int:
             "model": model,
             "elapsed_ms": int((time.time() - started) * 1000),
         }
-        sys.stdout.write(_compact_json(out))
+        _write_output(out, args.output, evidence_text)
         return 1
 
     # 根据 API 模式解析响应
     message = ""
     api_citations: list[dict[str, Any]] = []
 
-    if use_responses_api:
+    if request_uses_responses:
         message, api_citations = _parse_responses_api_result(resp)
     else:
         try:
@@ -1017,7 +1024,7 @@ def main() -> int:
             "model": model,
             "elapsed_ms": int((time.time() - started) * 1000),
         }
-        sys.stdout.write(_compact_json(out))
+        _write_output(out, args.output, evidence_text)
         return 1
 
     # Fetch 模式：直接返回原始 Markdown 内容，不做 JSON 解析
@@ -1027,11 +1034,11 @@ def main() -> int:
             "fetch_url": fetch_url,
             "config_path": config_path,
             "model": resp.get("model") or model,
-            "content": message,
+            "content": strip_stream_decorations(message),
             "usage": resp.get("usage") or {},
             "elapsed_ms": int((time.time() - started) * 1000),
         }
-        sys.stdout.write(_compact_json(out))
+        _write_output(out, args.output)
         return 0
 
     parsed = _coerce_json_object(message)
@@ -1108,7 +1115,7 @@ def main() -> int:
             "saucenao": reverse_agg.get("saucenao", {}),
             "notes": reverse_agg.get("notes", []),
         }
-    sys.stdout.write(_compact_json(out))
+    _write_output(out, args.output, evidence_text)
     return 0
 
 

@@ -56,25 +56,25 @@
 | `max_retries` | int | 否 | 最大重试次数（默认: 3） |
 | `retry_delay` | float | 否 | 重试间隔时间（默认: 1 秒），429 时优先使用 Retry-After 头 |
 | `retryable_status_codes` | list | 否 | 可重试的 HTTP 状态码（默认: [429, 500, 502, 503, 504]） |
-| `custom_system_prompt` | text | 否 | 自定义系统提示词；留空时按渲染目标自动选择内置提示词（卡片模式请求结构化 Markdown，文本模式用纯文本） |
+| `custom_system_prompt` | text | 否 | 替换指令、LLM Tool 和 Skill 的搜索提示词；留空按输出目标选内置规则。建议保留 `content` / `sources` JSON 格式；网页抓取使用独立提示词 |
 
 ### 输出设置
 
 | 配置项 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| `show_sources` | bool | 否 | 是否显示来源 URL（默认: false） |
+| `show_sources` | bool | 否 | 是否在指令结果中展示来源 URL，不影响 LLM 获取来源（默认: false） |
 | `render_as_image` | bool | 否 | 是否将搜索结果渲染为图片卡片（默认: false） |
 | `markdown_plain_fallback` | bool | 否 | 卡片渲染/发送失败降级为文本时，是否将结构化 Markdown 转为纯文本（避免裸标记）；仅作用于卡片降级路径，若误伤可关闭（默认: true） |
 | `send_as_forward` | bool | 否 | 将 `/grok` 结果以合并转发发送，仅 OneBot v11/aiocqhttp 支持，其他平台自动降级（默认: false） |
 | `card_theme` | string | 否 | 卡片主题：auto（按时间自动）/ dark / light（默认: auto） |
-| `max_sources` | int | 否 | 最大返回来源数量，0 表示不限制（默认: 5） |
+| `max_sources` | int | 否 | 指令展示的来源数量上限，0 表示不限；LLM 保留全部可用来源（默认: 5） |
 
 ### 工具设置
 
 | 配置项 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | `enable_fetch` | bool | 否 | 启用网页抓取工具（默认: false），关闭时工具不会注册 |
-| `enable_skill` | bool | 否 | 安装 Skill 到 skills 目录（启用后所有 LLM Tool 不会注册） |
+| `enable_skill` | bool | 否 | 安装 Skill 并禁用本插件的两个 LLM Tool；仍需宿主执行工具运行脚本 |
 
 > 工具开关在插件初始化时生效，修改配置后插件会自动重载卸载工具。
 
@@ -172,11 +172,13 @@
 
 每次搜索请求会自动注入当前时间上下文（日期、星期、时区），帮助 Grok 更好地处理时效性查询。
 
-当用户请求图片溯源/识别时，模型可设置 `use_serpapi` / `use_saucenao` 参数触发反向搜图；无有效图片时工具会本地跳过并在结果中说明。
+图片溯源时，一般照片、商品或地点优先 `use_serpapi`（Google Lens），插画作者、原图或动漫出处优先 `use_saucenao`；需扩大覆盖时可同时开启。仅描述图片或 OCR 不必开启；无有效图片或对应 Key 时本地跳过。
+
+搜索深度：`basic` 用于直接核实，`advanced` 用于多方面研究，`deep` 用于复杂或证据冲突的问题。时间优先级为明确日期 > `time_range` > `days`；`days` 对两种主题均有效，`news` 未指定时间时默认 7 天。时间范围与结果数量是检索引导，不保证服务端严格过滤或凑足数量。
 
 ### Web Fetch
 
-`grok_web_fetch` 工具可抓取指定 URL 的网页内容并转为结构化 Markdown。利用 Grok 的联网能力实现。
+`grok_web_fetch` 尝试通过 Grok 读取指定 URL 的可访问正文，保留原文语言并转为 Markdown；页面不可达或内容不全时说明限制，不保证完整抓取。
 
 ```
 # LLM 可自动调用，例如用户说：
@@ -187,14 +189,12 @@
 
 开启 `enable_skill` 后，会安装 Skill 到 `data/skills/grok-search/`，LLM 可读取 SKILL.md 后执行脚本。
 
-Skill 脚本支持通过 `--image-files` 参数传入本地图片进行多模态搜索：
+脚本使用 `--image-files` 接收本地图片，不自动提取消息附件。供 LLM 调用时使用 `--output llm`，仅返回正文、来源、候选证据和错误类别；默认 `--output json` 保留旧诊断字段供人工排查。
 
 ```bash
-python scripts/grok_search.py --query "这张图片是什么？" --image-files "/path/to/image.jpg"
-
-# 反向搜图（需在配置或 config.json 中提供对应 API Key）
-python scripts/grok_search.py --query "找这张图的出处" --image-files "/path/to/image.jpg" --saucenao
-python scripts/grok_search.py --query "..." --image-files "/path/a.jpg" --all   # 两家后端 + deep
+python scripts/grok_search.py --output llm --query "这张图片是什么？" --image-files "/path/to/image.jpg"
+python scripts/grok_search.py --output llm --query "找这张图的出处" --image-files "/path/to/image.jpg" --saucenao
+python scripts/grok_search.py --output llm --query "找出处并核实" --image-files "/path/a.jpg" --all
 ```
 
 ## 输出示例

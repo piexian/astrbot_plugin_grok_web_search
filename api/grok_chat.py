@@ -24,6 +24,7 @@ from ..tool.tool import (
     normalize_base_url,
     parse_sources_from_message,
     retry_request,
+    strip_stream_decorations,
     validate_config,
 )
 
@@ -45,6 +46,7 @@ async def grok_search(
     retryable_status_codes: set[int] | None = None,
     images: list[str] | None = None,
     proxy: str | None = None,
+    parse_json_response: bool = True,
 ) -> dict[str, Any]:
     """
     调用 Grok API 进行联网搜索（异步）
@@ -65,6 +67,7 @@ async def grok_search(
         retryable_status_codes: 可重试的 HTTP 状态码集合，为 None 时使用默认值
         images: 可选的 base64 编码图片列表，用于构建多模态消息
         proxy: HTTP 代理地址
+        parse_json_response: 搜索时解析 JSON；抓取时保留完整 Markdown 正文
 
     Returns:
         {
@@ -272,7 +275,15 @@ async def grok_search(
             raw=json.dumps(data, ensure_ascii=False)[:2000] if data else "",
         )
 
-    parsed_msg = parse_sources_from_message(message)
+    if parse_json_response:
+        parsed_msg = parse_sources_from_message(message)
+    else:
+        # 网页中的 JSON 示例不是搜索协议，不能交给 JSON 提取器。
+        parsed_msg = {
+            "content": strip_stream_decorations(message),
+            "sources": [],
+            "raw": "",
+        }
 
     return {
         "ok": True,
@@ -306,7 +317,6 @@ async def grok_fetch(
         timeout: 超时时间（秒）
         extra_body: 额外请求体参数
         extra_headers: 额外请求头
-        session: 可选 aiohttp.ClientSession
         proxy: 代理地址
 
     Returns:
@@ -330,12 +340,13 @@ async def grok_fetch(
         system_prompt=FETCH_SYSTEM_PROMPT,
         max_retries=2,
         proxy=proxy,
+        parse_json_response=False,
     )
 
     if not result.get("ok"):
         return result
 
-    content = result.get("raw") or result.get("content", "")
+    content = result.get("content", "")
 
     return {
         "ok": True,

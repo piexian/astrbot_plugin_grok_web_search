@@ -113,7 +113,7 @@
       "custom_system_prompt": {
         "type": "text",
         "description": "自定义系统提示词",
-        "hint": "留空使用默认提示词",
+        "hint": "替换指令、LLM Tool 和 Skill 的搜索提示词；留空使用内置规则。建议保留 content/sources JSON 格式；网页抓取使用独立提示词",
         "default": "",
         "editor_mode": true,
         "editor_language": "markdown",
@@ -129,7 +129,7 @@
       "show_sources": {
         "type": "bool",
         "description": "是否在结果中显示来源 URL",
-        "hint": "启用后将在搜索结果中显示来源链接",
+        "hint": "仅控制指令结果的来源展示；提供给 LLM 的可用来源始终保留",
         "default": false
       },
       "render_as_image": {
@@ -163,8 +163,8 @@
       },
       "max_sources": {
         "type": "int",
-        "description": "最大返回来源数量",
-        "hint": "控制返回的来源链接数量，0 表示不限制",
+        "description": "最大展示来源数量",
+        "hint": "仅限制指令展示的来源数量，0 表示不限；LLM 保留全部可用来源",
         "default": 5
       }
     }
@@ -183,7 +183,7 @@
       "enable_skill": {
         "type": "bool",
         "description": "是否安装 Skill 到 skills 目录",
-        "hint": "启用后将安装 Skill 以供 AstrBot 使用，同时禁用 LLM Tool",
+        "hint": "安装 Skill 并禁用本插件的两个 LLM Tool；执行脚本仍需宿主执行工具",
         "default": false
       }
     }
