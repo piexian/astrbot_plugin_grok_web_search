@@ -93,7 +93,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install pytest aiohttp pillow
+        run: pip install pytest aiohttp pillow docstring-parser
 
       - name: Run tests
         run: python -m pytest -q
