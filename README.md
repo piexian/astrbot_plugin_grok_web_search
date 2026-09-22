@@ -78,6 +78,17 @@
 
 > 工具开关在插件初始化时生效，修改配置后插件会自动重载卸载工具。
 
+### 反向搜图设置
+
+| 配置项 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `serpapi_api_key` | string | 否 | SerpAPI API Key，用于 Google Lens 反向搜图（`--serpapi` / `use_serpapi`），留空则该后端不可用 |
+| `saucenao_api_key` | string | 否 | SauceNAO API Key，用于 SauceNAO 反向搜图（`--saucenao` / `use_saucenao`），留空则该后端不可用 |
+| `image_search_timeout` | int | 否 | 单后端单张图片的搜图超时（默认: 30 秒），不自动重试 |
+| `image_search_max_images` | int | 否 | 单次反向搜图的图片上限（默认: 3），超出部分跳过 |
+
+> 反向搜图按请求开启（非全局开关）；无有效图片时本地拦截，不会产生任何 API 消耗。图片会上传至所选服务，注意隐私边界。
+
 ### 图片卡片渲染
 
 启用 `render_as_image` 后，`/grok` 指令的搜索结果将渲染为精美的图片卡片发送：
@@ -122,7 +133,31 @@
 [图片] /grok 这张图片里有什么？
 ```
 
+
 > `/grok help` 会显示当前供应商来源、模型、系统提示词类型等配置信息。
+
+### 指令参数
+
+参数置于搜索内容前，可组合：
+
+| 参数 | 说明 |
+|------|------|
+| `--serpapi` | 对消息中的图片执行 Google Lens 反向搜图（需配置 SerpAPI Key） |
+| `--saucenao` | 对消息中的图片执行 SauceNAO 反向搜图（需配置 SauceNAO Key） |
+| `--all` | 等价于 `--serpapi --saucenao --depth deep` |
+| `--depth <级别>` / `--search-depth` | 指定搜索深度：`basic` / `advanced` / `deep` |
+| `--` | 终止参数解析，其后内容按原文搜索 |
+
+示例：
+
+```
+/grok --depth advanced 最新的 AI 新闻
+[图片] /grok --saucenao 找这张图的出处
+[图片] /grok --all 找出处并深度核实
+/grok -- --all 这不是参数而是内容
+```
+
+> 反向搜图结果作为候选来源交给 Grok 核验，不直接当作结论；无图片时自动跳过，不产生搜图消耗。
 
 ### 重试机制
 
@@ -136,6 +171,8 @@
 当 LLM 需要搜索实时信息时，会自动调用 `grok_web_search` 工具。如果用户消息中包含图片，工具会自动提取图片进行多模态搜索。LLM 也可以通过 `image_urls` 参数主动传入图片链接。
 
 每次搜索请求会自动注入当前时间上下文（日期、星期、时区），帮助 Grok 更好地处理时效性查询。
+
+当用户请求图片溯源/识别时，模型可设置 `use_serpapi` / `use_saucenao` 参数触发反向搜图；无有效图片时工具会本地跳过并在结果中说明。
 
 ### Web Fetch
 
@@ -154,6 +191,10 @@ Skill 脚本支持通过 `--image-files` 参数传入本地图片进行多模态
 
 ```bash
 python scripts/grok_search.py --query "这张图片是什么？" --image-files "/path/to/image.jpg"
+
+# 反向搜图（需在配置或 config.json 中提供对应 API Key）
+python scripts/grok_search.py --query "找这张图的出处" --image-files "/path/to/image.jpg" --saucenao
+python scripts/grok_search.py --query "..." --image-files "/path/a.jpg" --all   # 两家后端 + deep
 ```
 
 ## 输出示例

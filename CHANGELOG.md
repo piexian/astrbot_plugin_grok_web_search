@@ -2,6 +2,18 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+
+## [1.6.0] - 2026-09-23
+
+### Added
+
+- **反向搜图**：新增 SerpAPI Google Lens 与 SauceNAO 双后端。图片上传后按原图检索（Lens 首轮不带文字条件，避免主模型猜测的角色名污染检索），候选来源作为证据交给 Grok 核验
+- LLM Tool `grok_web_search` 新增 `use_serpapi` / `use_saucenao` 参数
+- `/grok` 指令新增 `--serpapi` / `--saucenao` / `--all` / `--depth <级别>` / `--` 参数；`--all` 等价于两家后端全开 + deep 深度
+- Skill 脚本同步支持 `--serpapi` / `--saucenao` / `--all`；与 `--fetch-url` 组合时本地报错
+- 新增「反向搜图设置」配置组：两家 API Key、单图超时（默认 30 秒）、单次图片上限（默认 3 张）
+- 无有效图片时本地拦截反向搜图，不产生任何 API 消耗；单后端失败不影响另一家结果；搜图调用不自动重试，并沿用代理配置
+- 新增单元测试（40 项，含 main.py 导入接线静态检查）并接入 CI（pytest）
 ## [1.5.1] - 2026-08-01
 
 ### Fixed
