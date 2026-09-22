@@ -48,3 +48,24 @@ def test_missing_query_exits_before_reverse_search(monkeypatch, tmp_path):
     rc = mod.main()
     assert rc == 2
     assert calls == []  # 缺 --query 时不得发起任何搜图
+
+
+def test_skill_accepts_depth_alias(monkeypatch, tmp_path, capsys):
+    """--depth 是 --search-depth 的别名：不得出现 unrecognized arguments。"""
+    mod = _load_script()
+    monkeypatch.setenv("ASTRBOT_DATA_PATH", "/nonexistent-grok-test")
+    monkeypatch.setattr(
+        mod, "_default_skill_config_paths", lambda: [str(tmp_path / "none.json")]
+    )
+    monkeypatch.setattr(
+        mod, "_default_user_config_path", lambda: str(tmp_path / "user-none.json")
+    )
+
+    for flag in ("--depth", "--depth=deep", "--search-depth", "--search-depth=deep"):
+        parts = flag.split("=") if "=" in flag else [flag, "advanced"]
+        monkeypatch.setattr(sys, "argv", ["grok_search.py", *parts])
+        rc = mod.main()
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "unrecognized" not in err, flag
+        assert "Missing base URL" in err, flag

@@ -599,9 +599,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--search-depth",
+        "--depth",
+        dest="search_depth",
         type=str,
         default="",
-        help="Search depth: basic, advanced, or deep.",
+        help="Search depth: basic, advanced, or deep (--depth is an alias).",
     )
     parser.add_argument(
         "--max-results",

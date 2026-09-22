@@ -69,7 +69,7 @@ Fetch mode uses Grok's web browsing capability to retrieve the URL and convert i
 | `--api-key` | Override API key |
 | `--model` | Override model name |
 | `--timeout-seconds` | Request timeout in seconds |
-| `--search-depth` | Search depth: `basic`, `advanced`, or `deep` |
+| `--search-depth` / `--depth` | Search depth: `basic`, `advanced`, or `deep` |
 | `--max-results` | Desired result count, clamped to 5-20 |
 | `--topic` | Search topic: `general` or `news` |
 | `--days` | Days to look back from today |

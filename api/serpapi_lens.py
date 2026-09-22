@@ -33,14 +33,19 @@ async def serpapi_lens_search(
     """
     data, mime = image
     try:
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=float(timeout))
-        ) as session:
+        # 上传与检索共用同一个超时预算，避免单图耗时接近配置值的两倍
+        deadline = asyncio.get_running_loop().time() + float(timeout)
+        async with aiohttp.ClientSession() as session:
+            remaining = deadline - asyncio.get_running_loop().time()
+            upload_timeout = aiohttp.ClientTimeout(total=max(0.1, remaining))
             form = aiohttp.FormData()
             form.add_field("image", data, content_type=mime, filename="image")
             form.add_field("api_key", api_key)
             async with session.post(
-                f"{SERPAPI_BASE_URL}/image", data=form, proxy=proxy
+                f"{SERPAPI_BASE_URL}/image",
+                data=form,
+                proxy=proxy,
+                timeout=upload_timeout,
             ) as resp:
                 body = await resp.json(content_type=None)
                 image_id = ""
@@ -60,8 +65,14 @@ async def serpapi_lens_search(
                 "image_id": image_id,
                 "api_key": api_key,
             }
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return {"ok": False, "payload": None, "error": "SerpAPI 请求超时"}
             async with session.get(
-                f"{SERPAPI_BASE_URL}/search", params=params, proxy=proxy
+                f"{SERPAPI_BASE_URL}/search",
+                params=params,
+                proxy=proxy,
+                timeout=aiohttp.ClientTimeout(total=max(0.1, remaining)),
             ) as resp:
                 payload = await resp.json(content_type=None)
                 if resp.status != 200:
