@@ -79,6 +79,9 @@ Fetch mode uses Grok's web browsing capability to retrieve the URL and convert i
 | `--extra-body-json` | Extra JSON to merge into request body |
 | `--extra-headers-json` | Extra JSON to merge into request headers |
 | `--image-files` | Comma-separated image file paths for multimodal queries |
+| `--serpapi` | Reverse image search via Google Lens (needs SerpAPI key in config) |
+| `--saucenao` | Reverse image search via SauceNAO (needs SauceNAO key in config) |
+| `--all` | Both reverse image backends + force `--search-depth deep` |
 
 ## Output
 
@@ -135,4 +138,5 @@ JSON to stdout (敏感信息如 base_url、api_key 不会输出)：
 - Endpoint: `POST {base_url}/v1/chat/completions`
 - Fetch mode uses a specialized system prompt imported from the plugin's `tool.py`
 - If your provider requires custom flags to enable search, pass them via `--extra-body-json`
-- The script uses only Python standard library (no external dependencies)
+- The script uses only the Python standard library, except reverse image search (`--serpapi`/`--saucenao`/`--all`), which reuses the plugin's aiohttp-based adapters
+- Reverse image search is skipped locally (zero requests) when no valid image is provided; `--fetch-url` cannot be combined with it

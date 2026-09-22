@@ -1,5 +1,17 @@
 """tool 包：从子模块 re-export 常用符号，便于 skill 脚本以 ``from tool import X`` 引用。"""
 
+from .image_search import (
+    DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
+    DEFAULT_IMAGE_SEARCH_TIMEOUT,
+    format_evidence,
+    normalize_saucenao_payload,
+    normalize_serpapi_payload,
+    parse_cmd_args,
+    plan_backends,
+    prepare_serpapi_image,
+    run_reverse_image_search,
+    validate_images,
+)
 from .tool import (
     CMD_CARD_SYSTEM_PROMPT,
     CMD_TEXT_SYSTEM_PROMPT,
@@ -34,9 +46,12 @@ from .tool import (
 
 __all__ = [
     "CMD_CARD_SYSTEM_PROMPT",
-    "CMD_TEXT_SYSTEM_PROMPT",
+    "DEFAULT_IMAGE_SEARCH_MAX_IMAGES",
+    "DEFAULT_IMAGE_SEARCH_TIMEOUT",
     "DEFAULT_MODEL",
     "FETCH_SYSTEM_PROMPT",
+    "format_evidence",
+    "CMD_TEXT_SYSTEM_PROMPT",
     "build_headers",
     "build_search_time_constraints",
     "build_user_content",
@@ -49,17 +64,24 @@ __all__ = [
     "normalize_api_key",
     "normalize_base_url",
     "normalize_base_url_value",
+    "normalize_saucenao_payload",
+    "normalize_serpapi_payload",
     "normalize_image",
     "normalize_search_options",
     "normalize_sources",
+    "parse_cmd_args",
     "parse_json_config",
     "parse_json_object",
     "parse_retry_after",
+    "plan_backends",
+    "prepare_serpapi_image",
     "resolve_mode_model",
     "resolve_reasoning_params",
     "resolve_search_mode",
+    "run_reverse_image_search",
     "resolve_system_prompt",
     "safe_number",
     "strip_stream_decorations",
     "validate_config",
+    "validate_images",
 ]

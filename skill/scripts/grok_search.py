@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import base64
 import json
 import os
@@ -16,14 +17,18 @@ if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
 from tool import (  # noqa: E402
+    DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
+    DEFAULT_IMAGE_SEARCH_TIMEOUT,
     DEFAULT_MODEL,
     FETCH_SYSTEM_PROMPT,
     build_search_time_constraints,
+    format_evidence,
     get_local_time_info,
     normalize_search_options,
     resolve_mode_model,
     resolve_reasoning_params,
     resolve_search_mode,
+    run_reverse_image_search,
     strip_stream_decorations,
 )
 from tool import (  # noqa: E402
@@ -71,6 +76,10 @@ _CONFIG_PATHS = {
     "max_sources": ("output_settings", "max_sources"),
     "enable_fetch": ("tool_settings", "enable_fetch"),
     "enable_skill": ("tool_settings", "enable_skill"),
+    "serpapi_api_key": ("reverse_image_search", "serpapi_api_key"),
+    "saucenao_api_key": ("reverse_image_search", "saucenao_api_key"),
+    "image_search_timeout": ("reverse_image_search", "image_search_timeout"),
+    "image_search_max_images": ("reverse_image_search", "image_search_max_images"),
 }
 
 _CONFIG_DEFAULTS = {
@@ -98,6 +107,10 @@ _CONFIG_DEFAULTS = {
     "max_sources": 5,
     "enable_fetch": False,
     "enable_skill": False,
+    "serpapi_api_key": "",
+    "saucenao_api_key": "",
+    "image_search_timeout": DEFAULT_IMAGE_SEARCH_TIMEOUT,
+    "image_search_max_images": DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
 }
 
 
@@ -110,6 +123,67 @@ def _cfg(config: dict[str, Any], key: str):
             return section[path[1]]
     default = _CONFIG_DEFAULTS.get(key)
     return config.get(key, default)
+
+
+def _load_image_search_adapters():
+    """懒加载反向搜图适配层（依赖 aiohttp），缺失时抛 ImportError。"""
+    from api.saucenao import saucenao_search
+    from api.serpapi_lens import serpapi_lens_search
+
+    return serpapi_lens_search, saucenao_search
+
+
+def _run_reverse_image_search_sync(
+    args: argparse.Namespace, config: dict[str, Any], images: list[str]
+) -> dict[str, Any]:
+    """同步执行反向搜图（含本地拦截），返回聚合结果。"""
+    use_serpapi = args.serpapi or args.all
+    use_saucenao = args.saucenao or args.all
+    if not (use_serpapi or use_saucenao):
+        return {}
+    empty: dict[str, Any] = {
+        "requested": True,
+        "serpapi": {"ok": False, "matches": [], "error": ""},
+        "saucenao": {"ok": False, "matches": [], "error": ""},
+        "notes": [],
+        "evidence_text": "",
+    }
+    try:
+        serpapi_fn, saucenao_fn = _load_image_search_adapters()
+    except ImportError as e:
+        empty["notes"] = [f"反向搜图依赖不可用，已跳过（未产生搜图请求）: {e}"]
+        empty["evidence_text"] = format_evidence(empty)
+        return empty
+    try:
+        timeout = float(
+            _cfg(config, "image_search_timeout") or DEFAULT_IMAGE_SEARCH_TIMEOUT
+        )
+    except (TypeError, ValueError):
+        timeout = float(DEFAULT_IMAGE_SEARCH_TIMEOUT)
+    if timeout <= 0:
+        timeout = float(DEFAULT_IMAGE_SEARCH_TIMEOUT)
+    try:
+        max_images = int(
+            _cfg(config, "image_search_max_images") or DEFAULT_IMAGE_SEARCH_MAX_IMAGES
+        )
+    except (TypeError, ValueError):
+        max_images = DEFAULT_IMAGE_SEARCH_MAX_IMAGES
+    if max_images <= 0:
+        max_images = DEFAULT_IMAGE_SEARCH_MAX_IMAGES
+    return asyncio.run(
+        run_reverse_image_search(
+            images,
+            use_serpapi=use_serpapi,
+            use_saucenao=use_saucenao,
+            serpapi_key=str(_cfg(config, "serpapi_api_key") or ""),
+            saucenao_key=str(_cfg(config, "saucenao_api_key") or ""),
+            timeout=timeout,
+            proxy=str(_cfg(config, "proxy") or ""),
+            max_images=max_images,
+            serpapi_fn=serpapi_fn,
+            saucenao_fn=saucenao_fn,
+        )
+    )
 
 
 def _compact_json(data: Any) -> str:
@@ -585,7 +659,29 @@ def main() -> int:
         default="",
         help="URL to fetch and convert to Markdown (fetch mode, replaces --query).",
     )
+    parser.add_argument(
+        "--serpapi",
+        action="store_true",
+        help="Enable Google Lens reverse image search (needs configured key).",
+    )
+    parser.add_argument(
+        "--saucenao",
+        action="store_true",
+        help="Enable SauceNAO reverse image search (needs configured key).",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Enable both reverse image backends and force deep search depth.",
+    )
     args = parser.parse_args()
+
+    # 本地参数检查：fetch 模式与反向搜图互斥
+    if (args.serpapi or args.saucenao or args.all) and args.fetch_url:
+        sys.stderr.write(
+            "Error: --fetch-url cannot be combined with --serpapi/--saucenao/--all\n"
+        )
+        return 2
 
     env_config_path = os.environ.get("GROK_CONFIG_PATH", "").strip()
     explicit_config_path = args.config.strip() or env_config_path
@@ -668,6 +764,8 @@ def main() -> int:
         end_date=args.end_date.strip(),
     )
     search_depth = str(opts["search_depth"])
+    if args.all:
+        search_depth = "deep"  # --all 固定深度搜索
     max_results = int(str(opts["max_results"]))
     topic = str(opts["topic"])
     days = int(str(opts["days"]))
@@ -764,25 +862,28 @@ def main() -> int:
 
     started = time.time()
 
-    # 判断运行模式：fetch 模式 vs search 模式
+    # 判断运行模式：fetch 模式 vs search 模式；必填参数校验先于任何付费搜图请求
     fetch_url = args.fetch_url.strip() if hasattr(args, "fetch_url") else ""
     is_fetch_mode = bool(fetch_url)
 
     if is_fetch_mode:
-        # Fetch 模式：抓取网页内容
         if not fetch_url.startswith("http"):
             sys.stderr.write("Error: --fetch-url must be a full HTTP/HTTPS URL\n")
             return 2
+    elif not args.query:
+        sys.stderr.write(
+            "Error: --query is required (or use --fetch-url for fetch mode)\n"
+        )
+        return 2
+
+    # 反向搜图（--serpapi/--saucenao/--all）；无有效图片时本地拦截，不产生任何搜图请求
+    reverse_agg: dict[str, Any] = _run_reverse_image_search_sync(args, config, images)
+    evidence_text = str(reverse_agg.get("evidence_text") or "") if reverse_agg else ""
+
+    if is_fetch_mode:
         query = f"{fetch_url}\n获取该网页内容并返回其结构化 Markdown 格式"
     else:
-        # Search 模式：需要 --query
-        if not args.query:
-            sys.stderr.write(
-                "Error: --query is required (or use --fetch-url for fetch mode)\n"
-            )
-            return 2
         query = args.query
-
         # 构建时间约束提示词并注入搜索引导
         time_constraints = build_search_time_constraints(
             topic=topic,
@@ -806,6 +907,10 @@ def main() -> int:
                 f"- Desired results: {max_results}\n"
                 f"\n{query}"
             )
+
+        # 反向搜图证据附加在查询末尾，供 Grok 核验；失败/跳过说明一并提供
+        if evidence_text:
+            query = f"{query}\n\n{evidence_text}"
 
     try:
         if use_responses_api and not is_fetch_mode:
@@ -994,6 +1099,13 @@ def main() -> int:
         "usage": resp.get("usage") or {},
         "elapsed_ms": int((time.time() - started) * 1000),
     }
+    if reverse_agg:
+        out["reverse_image_search"] = {
+            "requested": reverse_agg.get("requested", True),
+            "serpapi": reverse_agg.get("serpapi", {}),
+            "saucenao": reverse_agg.get("saucenao", {}),
+            "notes": reverse_agg.get("notes", []),
+        }
     sys.stdout.write(_compact_json(out))
     return 0
 

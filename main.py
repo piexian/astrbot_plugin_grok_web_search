@@ -28,6 +28,8 @@ from astrbot.core.utils.quoted_message.chain_parser import (
 
 from .api.grok_chat import grok_fetch, grok_search
 from .api.grok_responses import grok_responses_search
+from .api.saucenao import saucenao_search
+from .api.serpapi_lens import serpapi_lens_search
 
 try:
     from astrbot.core.provider.register import llm_tools as _llm_tools_registry
@@ -53,6 +55,12 @@ from .tool.card_render import (
 )
 from .tool.card_render import (
     set_logger as set_card_logger,
+)
+from .tool.image_search import (
+    DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
+    DEFAULT_IMAGE_SEARCH_TIMEOUT,
+    parse_cmd_args,
+    run_reverse_image_search,
 )
 from .tool.tool import (
     CMD_CARD_SYSTEM_PROMPT,
@@ -101,6 +109,10 @@ CONFIG_PATHS = {
     "max_sources": ("output_settings", "max_sources"),
     "enable_fetch": ("tool_settings", "enable_fetch"),
     "enable_skill": ("tool_settings", "enable_skill"),
+    "serpapi_api_key": ("reverse_image_search", "serpapi_api_key"),
+    "saucenao_api_key": ("reverse_image_search", "saucenao_api_key"),
+    "image_search_timeout": ("reverse_image_search", "image_search_timeout"),
+    "image_search_max_images": ("reverse_image_search", "image_search_max_images"),
 }
 
 CONFIG_DEFAULTS = {
@@ -128,6 +140,10 @@ CONFIG_DEFAULTS = {
     "max_sources": 5,
     "enable_fetch": False,
     "enable_skill": False,
+    "serpapi_api_key": "",
+    "saucenao_api_key": "",
+    "image_search_timeout": DEFAULT_IMAGE_SEARCH_TIMEOUT,
+    "image_search_max_images": DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
 }
 
 
@@ -517,6 +533,37 @@ class GrokSearchPlugin(Star):
             return result
         return {}
 
+    async def _run_reverse_image_search(
+        self, images: list[str], use_serpapi: bool, use_saucenao: bool
+    ) -> dict:
+        """执行反向搜图编排，返回含 evidence_text 的聚合结果。"""
+        timeout = safe_number(
+            self._cfg("image_search_timeout", DEFAULT_IMAGE_SEARCH_TIMEOUT),
+            float(DEFAULT_IMAGE_SEARCH_TIMEOUT),
+            cast=float,
+            min_val=1,
+        )
+        max_images = int(
+            safe_number(
+                self._cfg("image_search_max_images", DEFAULT_IMAGE_SEARCH_MAX_IMAGES),
+                DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
+                cast=int,
+                min_val=1,
+            )
+        )
+        return await run_reverse_image_search(
+            images or [],
+            use_serpapi=use_serpapi,
+            use_saucenao=use_saucenao,
+            serpapi_key=str(self._cfg("serpapi_api_key", "") or ""),
+            saucenao_key=str(self._cfg("saucenao_api_key", "") or ""),
+            timeout=float(timeout),
+            proxy=str(self._cfg("proxy", "") or ""),
+            max_images=max_images,
+            serpapi_fn=serpapi_lens_search,
+            saucenao_fn=saucenao_search,
+        )
+
     async def _do_search(
         self,
         query: str,
@@ -786,6 +833,8 @@ class GrokSearchPlugin(Star):
         mode = "自定义"
         provider_id = self._cfg("base_url", "") or "未配置"
         model = self._cfg("model", DEFAULT_MODEL) or "默认"
+        serpapi_ready = bool((self._cfg("serpapi_api_key", "") or "").strip())
+        saucenao_ready = bool((self._cfg("saucenao_api_key", "") or "").strip())
         has_custom_prompt = bool((self._cfg("custom_system_prompt", "") or "").strip())
         if has_custom_prompt:
             prompt_info = "自定义"
@@ -799,10 +848,20 @@ class GrokSearchPlugin(Star):
             "  /grok help           显示此帮助\n"
             "  /grok <搜索内容>     执行联网搜索\n"
             "\n"
+            "参数（可组合，置于搜索内容前）:\n"
+            "  --serpapi            启用 Google Lens 反向搜图\n"
+            "  --saucenao           启用 SauceNAO 反向搜图\n"
+            "  --all                等价于 --serpapi --saucenao --depth deep\n"
+            "  --depth <级别>       搜索深度 basic/advanced/deep（--search-depth 别名）\n"
+            "  --                   其后内容按原文搜索\n"
+            "\n"
             "示例:\n"
             "  /grok Python 3.12 有什么新特性\n"
-            "  /grok 最新的 AI 新闻\n"
-            "  /grok React 19 发布了吗\n"
+            "  /grok --depth advanced 最新的 AI 新闻\n"
+            "  [图片] /grok --saucenao 找这张图的出处\n"
+            "  [图片] /grok --all 找出处并深度核实\n"
+            "\n"
+            "说明: 反向搜图需在配置中填写对应 API Key；无图片时自动跳过，不产生消耗。\n"
             "\n"
             "调用方式:\n"
             "  - /grok 指令：直接搜索并返回结果\n"
@@ -812,7 +871,8 @@ class GrokSearchPlugin(Star):
             f"  供应商来源: {mode}\n"
             f"  供应商: {provider_id}\n"
             f"  模型: {model}\n"
-            f"  系统提示词: {prompt_info}"
+            f"  系统提示词: {prompt_info}\n"
+            f"  反向搜图: Lens {'已配置' if serpapi_ready else '未配置'} / SauceNAO {'已配置' if saucenao_ready else '未配置'}"
         )
 
     @staticmethod
@@ -827,7 +887,8 @@ class GrokSearchPlugin(Star):
     async def grok_cmd(self, event: AstrMessageEvent, query: GreedyStr):
         """执行 Grok 搜索
 
-        用法: /grok <搜索内容>
+        用法: /grok [--serpapi] [--saucenao] [--all] [--depth basic|advanced|deep] <搜索内容>
+        详见 /grok help。
         """
         # 提取消息中的文本和图片（包括引用消息/转发消息）
         extra_text, images = await self._extract_content_from_event(event)
@@ -845,6 +906,18 @@ class GrokSearchPlugin(Star):
         if query.strip().lower() == "help":
             yield event.plain_result(self._help_text())
             return
+
+        # 解析指令参数（--serpapi/--saucenao/--all/--depth/--）；失败时本地报错
+        parsed = parse_cmd_args(query)
+        if not parsed.get("ok"):
+            yield event.plain_result(
+                f"参数错误: {parsed.get('error')}\n用法示例: /grok --all 搜索内容"
+            )
+            return
+        query = str(parsed.get("query") or "")
+        use_serpapi = bool(parsed.get("use_serpapi"))
+        use_saucenao = bool(parsed.get("use_saucenao"))
+        search_depth = str(parsed.get("search_depth") or "basic")
 
         # 无查询文本但有图片或引用内容时，继续搜索
         has_content = bool(images) or bool(extra_text)
@@ -872,11 +945,22 @@ class GrokSearchPlugin(Star):
             CMD_CARD_SYSTEM_PROMPT if use_image_card else CMD_TEXT_SYSTEM_PROMPT,
         )
 
+        # 反向搜图：仅在开关打开时执行；无有效图片时本地拦截，不产生任何搜图请求
+        evidence_text = ""
+        if use_serpapi or use_saucenao:
+            agg = await self._run_reverse_image_search(
+                images, use_serpapi, use_saucenao
+            )
+            evidence_text = str(agg.get("evidence_text") or "")
+            if evidence_text:
+                query = f"{query}\n\n{evidence_text}"
+
         result = await self._do_search(
             query,
             system_prompt=cmd_system_prompt,
             use_retry=True,
             images=images or None,
+            search_depth=search_depth,
         )
         event.should_call_llm(True)
 
@@ -1025,6 +1109,8 @@ class GrokSearchPlugin(Star):
         event: AstrMessageEvent,
         query: str,
         image_urls: str = "",
+        use_serpapi: bool = False,
+        use_saucenao: bool = False,
         search_depth: str = "basic",
         max_results: int = 7,
         topic: str = "general",
@@ -1042,12 +1128,15 @@ class GrokSearchPlugin(Star):
         - Questions involving content beyond your training data cutoff
         - Need the latest status of a specific URL, product, or person
         - Need to find discussions, posts, or social media sentiment on X (Twitter)
+        - Image source/identification requests: set use_serpapi/use_saucenao to run reverse image search on the attached images
 
         Returns: Search result summary text with optional source links. Error message on failure.
 
         Args:
             query(string): Search query — clear, specific, self-contained natural language question or keywords
             image_urls(string): Optional comma-separated image URLs for image-based search
+            use_serpapi(bool): Run Google Lens reverse image search on the images. Requires the plugin to have a SerpAPI key configured. Skipped locally when no valid image is available. Default false
+            use_saucenao(bool): Run SauceNAO reverse image search on the images. Requires the plugin to have a SauceNAO key configured. Skipped locally when no valid image is available. Default false
             search_depth(string): "basic" (quick overview), "advanced" (thorough research), or "deep" (exhaustive analysis). Default "basic"
             max_results(int): Desired number of results, 5-20. Default 7
             topic(string): "general" or "news". Default "general"
@@ -1095,6 +1184,16 @@ class GrokSearchPlugin(Star):
                 f"[Referenced message content]\n{extra_text}\n\n[User query]\n{query}"
             )
 
+        # 反向搜图：仅在开关打开时执行；无有效图片时本地拦截，不产生任何搜图请求
+        evidence_text = ""
+        if use_serpapi or use_saucenao:
+            agg = await self._run_reverse_image_search(
+                images, use_serpapi, use_saucenao
+            )
+            evidence_text = str(agg.get("evidence_text") or "")
+            if evidence_text:
+                query = f"{query}\n\n{evidence_text}"
+
         if images:
             logger.info(
                 f"[{PLUGIN_NAME}] grok_web_search tool: processing with {len(images)} image(s)"
@@ -1112,7 +1211,10 @@ class GrokSearchPlugin(Star):
             start_date=start_date,
             end_date=end_date,
         )
-        return self._format_result_for_llm(result)
+        formatted = self._format_result_for_llm(result)
+        if evidence_text:
+            return f"{evidence_text}\n\n{formatted}"
+        return formatted
 
     @filter.llm_tool(name="grok_web_fetch")
     async def grok_fetch_tool(self, event: AstrMessageEvent, url: str):

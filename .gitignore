@@ -214,5 +214,5 @@ CLAUDE.md
 # Font files (auto-downloaded at runtime)
 font/
 
-# Test images
-test_*
+# Test images (repo root only; unit tests live in tests/)
+/test_*

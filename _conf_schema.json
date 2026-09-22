@@ -213,6 +213,37 @@
       }
     }
   },
+  "reverse_image_search": {
+    "type": "object",
+    "description": "反向搜图设置",
+    "hint": "Google Lens / SauceNAO 反向搜图；启用对应参数时图片会上传至所选服务",
+    "items": {
+      "serpapi_api_key": {
+        "type": "string",
+        "description": "SerpAPI API Key",
+        "hint": "用于 Google Lens 反向搜图（--serpapi / use_serpapi），留空则该后端不可用",
+        "default": ""
+      },
+      "saucenao_api_key": {
+        "type": "string",
+        "description": "SauceNAO API Key",
+        "hint": "用于 SauceNAO 反向搜图（--saucenao / use_saucenao），留空则该后端不可用",
+        "default": ""
+      },
+      "image_search_timeout": {
+        "type": "int",
+        "description": "反向搜图超时（秒）",
+        "hint": "单个后端单张图片的请求超时，不自动重试",
+        "default": 30
+      },
+      "image_search_max_images": {
+        "type": "int",
+        "description": "单次反向搜图图片上限",
+        "hint": "去重后超出上限的图片将被跳过",
+        "default": 3
+      }
+    }
+  },
   "model": {
     "type": "string",
     "default": "grok-4.1-fast",
@@ -337,6 +368,26 @@
   "enable_skill": {
     "type": "bool",
     "default": false,
+    "invisible": true
+  },
+  "serpapi_api_key": {
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "saucenao_api_key": {
+    "type": "string",
+    "default": "",
+    "invisible": true
+  },
+  "image_search_timeout": {
+    "type": "int",
+    "default": 30,
+    "invisible": true
+  },
+  "image_search_max_images": {
+    "type": "int",
+    "default": 3,
     "invisible": true
   }
 }
