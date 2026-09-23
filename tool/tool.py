@@ -730,20 +730,52 @@ def validate_config(
     return base_url, api_key
 
 
+# 宿主通用请求头（如 UA）：插件入口可选注入，共享核心不依赖 AstrBot
+_default_headers: dict[str, str] | None = None
+
+
+def set_default_headers(headers: dict | None) -> None:
+    """注入宿主通用请求头默认值（存副本）；空值清除。"""
+    global _default_headers
+    _default_headers = dict(headers) if headers else None
+
+
+def get_default_headers() -> dict[str, str] | None:
+    """返回宿主默认头副本；未注入时为 None。"""
+    return dict(_default_headers) if _default_headers else None
+
+
+def _merge_headers(target: dict[str, str], source: dict | None) -> None:
+    """按字段名大小写不敏感合并 source 到 target；不修改 source，键名沿用已有写法。"""
+    if not source:
+        return
+    for key, value in source.items():
+        name = str(key)
+        lowered = name.lower()
+        matching = [k for k in target if k.lower() == lowered]
+        if matching:
+            target[matching[0]] = str(value)
+        else:
+            target[name] = str(value)
+
+
+def _set_header(target: dict[str, str], name: str, value: str) -> None:
+    """写入固定请求头：移除大小写变体，统一使用给定键名。"""
+    for existing in [k for k in target if k.lower() == name.lower()]:
+        del target[existing]
+    target[name] = value
+
+
 def build_headers(
     api_key: str,
     extra_headers: dict | None = None,
 ) -> dict[str, str]:
-    """构建请求头，合并 extra_headers 并保护关键头"""
-    headers: dict[str, str] = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    if extra_headers:
-        protected = {"authorization", "content-type"}
-        for key, value in extra_headers.items():
-            if str(key).lower() not in protected:
-                headers[str(key)] = str(value)
+    """构建请求头；优先级：宿主默认头 < 用户 extra_headers < 固定鉴权/内容类型。"""
+    headers: dict[str, str] = {}
+    _merge_headers(headers, get_default_headers())
+    _merge_headers(headers, extra_headers)
+    _set_header(headers, "Content-Type", "application/json")
+    _set_header(headers, "Authorization", f"Bearer {api_key}")
     return headers
 
 

@@ -78,6 +78,7 @@ from .tool.tool import (
     normalize_base_url,
     resolve_system_prompt,
     safe_number,
+    set_default_headers,
 )
 
 PLUGIN_NAME = "astrbot_plugin_grok_web_search"
@@ -106,6 +107,19 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
+def _load_host_default_headers() -> dict[str, str]:
+    """可选取得宿主通用请求头（如 UA）；接口缺失或异常时返回空，不阻断请求。"""
+    try:
+        from astrbot.core.provider.headers import build_provider_headers
+
+        headers = build_provider_headers()
+    except Exception:
+        return {}
+    if not isinstance(headers, dict):
+        return {}
+    return {str(key): str(value) for key, value in headers.items()}
+
+
 class GrokSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -113,6 +127,7 @@ class GrokSearchPlugin(Star):
         self._card_fonts_ready = False
         self._font_thread: threading.Thread | None = None
         self._font_job = None
+        set_default_headers(_load_host_default_headers())
         self._migrate_legacy_config()
 
     def _cfg(self, key: str, default=None):

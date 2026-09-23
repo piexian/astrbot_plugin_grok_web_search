@@ -115,7 +115,9 @@
 | 配置项 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | `extra_body` | JSON | 否 | 额外请求体参数 |
-| `extra_headers` | JSON | 否 | 额外请求头 |
+| `extra_headers` | JSON | 否 | 额外请求头（覆盖宿主默认头；`Authorization`、`Content-Type` 始终由插件生成） |
+
+插件启动时可将宿主通用请求头（如 UA）用于 Grok 搜索、抓取与连通性检查；接口不可用时照常请求。覆盖顺序：宿主默认头 < `extra_headers` < 固定的 `Authorization` / `Content-Type`，字段名大小写不敏感。独立 Skill 不注入宿主头，可用 `extra_headers` 设置 UA。
 
 ## 使用
 
