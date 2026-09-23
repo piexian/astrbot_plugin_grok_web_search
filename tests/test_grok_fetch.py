@@ -181,3 +181,74 @@ def test_responses_search_uses_shared_prompt(monkeypatch, custom):
     assert calls[0][1]["json"]["input"][0]["content"] == (
         custom if custom is not None else tool.DEFAULT_JSON_SYSTEM_PROMPT
     )
+
+
+def test_responses_duplicate_citations_collapse_to_single_source(monkeypatch):
+    """annotations 与顶层 citations 的重复 URL 合并，插件只输出一个来源。"""
+
+    responses = load("api.grok_responses")
+    payload = {
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": '{"content":"Answer","sources":[]}',
+                        "annotations": [
+                            {
+                                "type": "url_citation",
+                                "url": "https://example.org/a",
+                                "title": "A",
+                            },
+                            {
+                                "type": "url_citation",
+                                "url": "https://example.org/a",
+                                "title": "A-dup",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+        "citations": ["https://example.org/a", "https://example.org/b"],
+    }
+    response = _Response(json.dumps(payload))
+    calls = []
+    monkeypatch.setattr(
+        responses.aiohttp, "ClientSession", lambda: _Session(response, calls)
+    )
+    result = asyncio.run(
+        responses.grok_responses_search(
+            "Question", "https://example.invalid", "test-fixture"
+        )
+    )
+    assert result["ok"] is True
+    assert [s["url"] for s in result["sources"]] == [
+        "https://example.org/a",
+        "https://example.org/b",
+    ]
+    assert [c["url"] for c in result["citations"]] == [
+        "https://example.org/a",
+        "https://example.org/b",
+    ]
+
+
+def test_error_results_carry_error_kind(monkeypatch):
+    """错误结果带类别标记，供 Skill 旧诊断输出分类使用。"""
+    _mock_http(monkeypatch, "Unauthorized", status=401)
+    result = asyncio.run(
+        chat.grok_search(
+            "Question", "https://example.invalid", "test-fixture", max_retries=0
+        )
+    )
+    assert result["ok"] is False
+    assert result["error_kind"] == "http"
+    assert result["status"] == 401
+
+    _mock_http(monkeypatch, "")  # 空消息触发 empty 类别
+    result = asyncio.run(
+        chat.grok_search("Question", "https://example.invalid", "test-fixture")
+    )
+    assert result["ok"] is False
+    assert result["error_kind"] == "empty"

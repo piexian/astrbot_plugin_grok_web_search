@@ -2,6 +2,37 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.6.2] - 2026-09-23
+
+### Changed
+
+- **共享核心统一**：配置映射/默认值与搜索编排抽取到 `tool/config.py`、`tool/search_service.py`，Skill 不再维护第二份 HTTP/SSE/来源解析实现；Chat 与 Responses 协议差异仍留在各自适配器
+- **Skill 自包含安装**：安装包内含同一源码生成的 `tool/`、`api/` 代码包（固定清单），脱离仓库路径可运行；同步与打包按清单校验，缺失即失败并保留原可用安装
+- **字体下载重构**：下载源扩展为 NJU → 清华 TUNA → astrdark 加速 → GitHub 直连；每个源在同一轮内完成 7z 魔数、长度与 SHA256 校验，坏包立即换源；资产记录优先官方 Release 元数据，不完整时回退内置已核验记录而非放宽校验
+- **渲染异步化**：卡片渲染移入线程池并串行化，不再阻塞事件循环；主题配色改为单次渲染上下文，消除全局 THEME 串扰
+
+### Fixed
+
+- Skill 搜索/抓取请求现在使用插件代理配置（此前仅反向搜图接入）
+- Skill 显式 `--model` 优先于 quick/detailed/deep 模型配置（此前被覆盖）
+- Skill 正确解析 JSON 文本形态的 extra_body / extra_headers 配置；受保护请求头（Authorization / Content-Type）与插件共用同一构造规则
+- Skill `--base-url` / `--api-key` 与 `GROK_BASE_URL` / `GROK_API_KEY` 单次覆盖真正生效（此前仅参与校验，请求仍读配置值）
+- Responses API 相同 URL 的重复 citations 合并为单一来源（插件与 Skill 一致）
+- Skill 安装失败不再连带卸载原本可用的 LLM Tool；仅安装成功后才切换到 Skill
+- Skill 安装/升级保护已安装目录与持久化目录的用户私有配置：安装态修改优先于旧持久化副本，失败回滚到原安装
+- 安装态脚本本地配置缺失时回落到插件持久化 skill 私有配置（`plugin_data`），不依赖重新安装
+- 损坏字体缓存清理后照常进入多源下载链，不再误入解压缺失路径
+- 字体解压/校验/发布改在作业独立 staging 完成，失败或取消回滚旧字体，不遗留半套字体
+- 字体发布备份先写临时文件再原子改名：备份写坏不再覆盖完好的原字体；发布临时/备份文件按作业 id 隔离并回收超龄残留
+- Skill 快照 symlink 与受管目录链 symlink 不再被跟随写出；清理只作用于快照记录的受管文件
+- terminate 改为协作停止 + 有界等待字体线程退出，修复任务遗留；插件卸载/重载互不干扰
+- 卡片渲染取消后等线程写完再传播，重复取消不会提前释放串行化信号量；取消期间渲染线程自身失败不再替换取消语义
+- `grok_web_fetch` 工具对无效的扩展参数配置返回明确错误，不再静默忽略
+
+### Removed
+
+- 移除 `set_logger` 日志注入链；`tool/font_loader` 直接使用宿主 `astrbot.api.logger`，共享核心与 Skill 包保持宿主无关
+
 
 ## [1.6.1] - 2026-09-23
 

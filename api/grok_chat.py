@@ -10,23 +10,42 @@ from typing import Any
 
 import aiohttp
 
-from ..tool.tool import (
-    DEFAULT_JSON_SYSTEM_PROMPT,
-    DEFAULT_MODEL,
-    FETCH_SYSTEM_PROMPT,
-    IMAGE_UNSUPPORTED_ERROR,
-    build_headers,
-    build_user_content,
-    format_http_error,
-    get_local_time_info,
-    make_error_result,
-    merge_extra_body,
-    normalize_base_url,
-    parse_sources_from_message,
-    retry_request,
-    strip_stream_decorations,
-    validate_config,
-)
+try:  # 插件包上下文（相对导入）
+    from ..tool.tool import (
+        DEFAULT_JSON_SYSTEM_PROMPT,
+        DEFAULT_MODEL,
+        FETCH_SYSTEM_PROMPT,
+        IMAGE_UNSUPPORTED_ERROR,
+        build_headers,
+        build_user_content,
+        format_http_error,
+        get_local_time_info,
+        make_error_result,
+        merge_extra_body,
+        normalize_base_url,
+        parse_sources_from_message,
+        retry_request,
+        strip_stream_decorations,
+        validate_config,
+    )
+except ImportError:  # Skill 安装态的顶层包上下文
+    from tool.tool import (
+        DEFAULT_JSON_SYSTEM_PROMPT,
+        DEFAULT_MODEL,
+        FETCH_SYSTEM_PROMPT,
+        IMAGE_UNSUPPORTED_ERROR,
+        build_headers,
+        build_user_content,
+        format_http_error,
+        get_local_time_info,
+        make_error_result,
+        merge_extra_body,
+        normalize_base_url,
+        parse_sources_from_message,
+        retry_request,
+        strip_stream_decorations,
+        validate_config,
+    )
 
 
 async def grok_search(
@@ -252,6 +271,7 @@ async def grok_search(
                 f"API 返回错误: {error_msg}",
                 started,
                 raw=json.dumps(data, ensure_ascii=False)[:2000],
+                kind="api",
             )
 
         choices = data.get("choices")
@@ -273,6 +293,7 @@ async def grok_search(
             started,
             retry_count,
             raw=json.dumps(data, ensure_ascii=False)[:2000] if data else "",
+            kind="empty",
         )
 
     if parse_json_response:
@@ -306,6 +327,7 @@ async def grok_fetch(
     extra_body: dict | None = None,
     extra_headers: dict | None = None,
     proxy: str | None = None,
+    max_retries: int = 2,
 ) -> dict[str, Any]:
     """利用 Grok 联网能力抓取指定 URL 的网页内容并转为 Markdown
 
@@ -338,7 +360,7 @@ async def grok_fetch(
         extra_body=extra_body,
         extra_headers=extra_headers,
         system_prompt=FETCH_SYSTEM_PROMPT,
-        max_retries=2,
+        max_retries=max_retries,
         proxy=proxy,
         parse_json_response=False,
     )

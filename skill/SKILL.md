@@ -54,8 +54,8 @@ Exit code 0 means the API returned content, not that every claim or page is veri
 
 ## Configuration
 
-The script reads AstrBot plugin configuration automatically, including the search `custom_system_prompt`; fetch keeps its dedicated extraction prompt. It supports Chat Completions and the configured Responses API for search; fetch uses Chat Completions.
+The script reads AstrBot plugin configuration automatically, including the search `custom_system_prompt`, the proxy and `extra_body` / `extra_headers` extensions; fetch keeps its dedicated extraction prompt. It supports Chat Completions and the configured Responses API for search; fetch uses Chat Completions. A `--model` given on the command line takes precedence over per-depth model settings.
 
-Without plugin configuration, use `--config`, `GROK_CONFIG_PATH`, skill-local `config.json` / `config.local.json`, or `~/.codex/config/grok-search.json`. Existing `GROK_BASE_URL`, `GROK_API_KEY` and `GROK_MODEL` environment variables override connection values. Never print secrets or put real keys in command arguments. Administrator diagnostics can use the default JSON output; do not feed it back into the model.
+Without plugin configuration, the script falls back to skill-local `config.json` / `config.local.json`, the plugin's persistent skill config under `plugin_data`, `--config`, `GROK_CONFIG_PATH`, or `~/.codex/config/grok-search.json` (installed config wins over the persistent copy). Existing `GROK_BASE_URL`, `GROK_API_KEY` and `GROK_MODEL` environment variables override connection values. Never print secrets or put real keys in command arguments. Administrator diagnostics can use the default JSON output; do not feed it back into the model.
 
 See `python scripts/grok_search.py --help` for connection overrides and advanced options.

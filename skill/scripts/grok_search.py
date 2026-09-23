@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+"""Grok 搜索 / 网页读取 / 反向搜图 Skill CLI。
+
+不维护第二份协议实现：HTTP/SSE/来源解析/重试语义直接复用插件共享核心
+（tool/ 与 api/ 代码包），安装态与仓库开发态均可运行。
+"""
+
 import argparse
 import asyncio
 import base64
@@ -5,127 +12,33 @@ import json
 import os
 import sys
 import time
-import urllib.error
-import urllib.request
 from typing import Any
 
-# ─── 从插件 tool.py 导入共享函数，避免重复维护 ───
-_PLUGIN_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
-)
-if _PLUGIN_DIR not in sys.path:
-    sys.path.insert(0, _PLUGIN_DIR)
+# ─── 共享核心导入路径：安装态 (skill 根) 与仓库开发态 (skill 上级) ───
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SKILL_ROOT = os.path.dirname(_HERE)
+_PLUGIN_ROOT = os.path.dirname(_SKILL_ROOT)
+for _path in (_PLUGIN_ROOT, _SKILL_ROOT):
+    if _path and os.path.isdir(_path) and _path not in sys.path:
+        sys.path.insert(0, _path)
 
-from tool import (  # noqa: E402
+from tool.config import config_value, parse_json_setting  # noqa: E402
+from tool.image_search import (  # noqa: E402
     DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
     DEFAULT_IMAGE_SEARCH_TIMEOUT,
-    DEFAULT_JSON_SYSTEM_PROMPT,
-    DEFAULT_MODEL,
-    FETCH_SYSTEM_PROMPT,
-    build_search_query,
-    build_search_time_constraints,
     format_evidence,
-    get_local_time_info,
-    normalize_search_options,
-    resolve_mode_model,
-    resolve_reasoning_params,
-    resolve_search_mode,
-    resolve_system_prompt,
     run_reverse_image_search,
-    strip_stream_decorations,
 )
-from tool import (  # noqa: E402
-    coerce_json_object as _coerce_json_object,
-)
-from tool import (  # noqa: E402
-    extract_urls as _extract_urls,
-)
-from tool import (  # noqa: E402
-    normalize_api_key as _normalize_api_key,
-)
-from tool import (  # noqa: E402
-    normalize_base_url as _normalize_base_url,
-)
-from tool import (  # noqa: E402
-    normalize_base_url_value as _normalize_base_url_value,
-)
-from tool import (  # noqa: E402
-    normalize_image as _normalize_image,
+from tool.search_service import _load_api, execute_search, resolve_model  # noqa: E402
+from tool.tool import (  # noqa: E402
+    DEFAULT_MODEL,
+    normalize_api_key,
+    normalize_base_url,
+    normalize_search_options,
+    resolve_search_mode,
 )
 
-# ─── 新版分组配置读取（与 main.py CONFIG_PATHS 保持一致）──────────────────
-_CONFIG_PATHS = {
-    "model": ("provider_settings", "model"),
-    "use_responses_api": ("provider_settings", "use_responses_api"),
-    "quick_model": ("provider_settings", "quick_model"),
-    "detailed_model": ("provider_settings", "detailed_model"),
-    "deep_model": ("provider_settings", "deep_model"),
-    "base_url": ("connection_settings", "base_url"),
-    "api_key": ("connection_settings", "api_key"),
-    "timeout_seconds": ("connection_settings", "timeout_seconds"),
-    "proxy": ("connection_settings", "proxy"),
-    "max_retries": ("request_settings", "max_retries"),
-    "retry_delay": ("request_settings", "retry_delay"),
-    "retryable_status_codes": ("request_settings", "retryable_status_codes"),
-    "custom_system_prompt": ("request_settings", "custom_system_prompt"),
-    "enable_stream": ("request_settings", "enable_stream"),
-    "extra_body": ("advanced_settings", "extra_body"),
-    "extra_headers": ("advanced_settings", "extra_headers"),
-    "show_sources": ("output_settings", "show_sources"),
-    "render_as_image": ("output_settings", "render_as_image"),
-    "markdown_plain_fallback": ("output_settings", "markdown_plain_fallback"),
-    "send_as_forward": ("output_settings", "send_as_forward"),
-    "card_theme": ("output_settings", "card_theme"),
-    "max_sources": ("output_settings", "max_sources"),
-    "enable_fetch": ("tool_settings", "enable_fetch"),
-    "enable_skill": ("tool_settings", "enable_skill"),
-    "serpapi_api_key": ("reverse_image_search", "serpapi_api_key"),
-    "saucenao_api_key": ("reverse_image_search", "saucenao_api_key"),
-    "image_search_timeout": ("reverse_image_search", "image_search_timeout"),
-    "image_search_max_images": ("reverse_image_search", "image_search_max_images"),
-}
-
-_CONFIG_DEFAULTS = {
-    "model": DEFAULT_MODEL,
-    "use_responses_api": False,
-    "quick_model": "",
-    "detailed_model": "",
-    "deep_model": "",
-    "base_url": "",
-    "api_key": "",
-    "timeout_seconds": 60,
-    "proxy": "",
-    "max_retries": 3,
-    "retry_delay": 1.0,
-    "retryable_status_codes": [429, 500, 502, 503, 504],
-    "custom_system_prompt": "",
-    "enable_stream": False,
-    "extra_body": "",
-    "extra_headers": "",
-    "show_sources": False,
-    "render_as_image": False,
-    "markdown_plain_fallback": True,
-    "send_as_forward": False,
-    "card_theme": "auto",
-    "max_sources": 5,
-    "enable_fetch": False,
-    "enable_skill": False,
-    "serpapi_api_key": "",
-    "saucenao_api_key": "",
-    "image_search_timeout": DEFAULT_IMAGE_SEARCH_TIMEOUT,
-    "image_search_max_images": DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
-}
-
-
-def _cfg(config: dict[str, Any], key: str):
-    """优先从分组配置读取，fallback 到平铺键和默认值"""
-    path = _CONFIG_PATHS.get(key)
-    if path:
-        section = config.get(path[0])
-        if isinstance(section, dict) and path[1] in section:
-            return section[path[1]]
-    default = _CONFIG_DEFAULTS.get(key)
-    return config.get(key, default)
+# 与 main.py CONFIG_PATHS 一致的分组读取由共享 tool.config 提供
 
 
 def _load_image_search_adapters():
@@ -159,7 +72,7 @@ def _run_reverse_image_search_sync(
         return empty
     try:
         timeout = float(
-            _cfg(config, "image_search_timeout") or DEFAULT_IMAGE_SEARCH_TIMEOUT
+            config_value(config, "image_search_timeout") or DEFAULT_IMAGE_SEARCH_TIMEOUT
         )
     except (TypeError, ValueError):
         timeout = float(DEFAULT_IMAGE_SEARCH_TIMEOUT)
@@ -167,7 +80,8 @@ def _run_reverse_image_search_sync(
         timeout = float(DEFAULT_IMAGE_SEARCH_TIMEOUT)
     try:
         max_images = int(
-            _cfg(config, "image_search_max_images") or DEFAULT_IMAGE_SEARCH_MAX_IMAGES
+            config_value(config, "image_search_max_images")
+            or DEFAULT_IMAGE_SEARCH_MAX_IMAGES
         )
     except (TypeError, ValueError):
         max_images = DEFAULT_IMAGE_SEARCH_MAX_IMAGES
@@ -178,10 +92,10 @@ def _run_reverse_image_search_sync(
             images,
             use_serpapi=use_serpapi,
             use_saucenao=use_saucenao,
-            serpapi_key=str(_cfg(config, "serpapi_api_key") or ""),
-            saucenao_key=str(_cfg(config, "saucenao_api_key") or ""),
+            serpapi_key=str(config_value(config, "serpapi_api_key") or ""),
+            saucenao_key=str(config_value(config, "saucenao_api_key") or ""),
             timeout=timeout,
-            proxy=str(_cfg(config, "proxy") or ""),
+            proxy=str(config_value(config, "proxy") or ""),
             max_images=max_images,
             serpapi_fn=serpapi_fn,
             saucenao_fn=saucenao_fn,
@@ -199,7 +113,7 @@ def _default_user_config_path() -> str:
 
 
 def _skill_root() -> str:
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    return _SKILL_ROOT
 
 
 def _find_astrbot_data_path() -> str:
@@ -264,11 +178,22 @@ def _load_astrbot_plugin_config() -> tuple[dict[str, Any], str]:
 
 
 def _default_skill_config_paths() -> list[str]:
+    """配置候选：安装态 skill 根优先，其次插件持久化 skill 目录。"""
     root = _skill_root()
-    return [
+    paths = [
         os.path.join(root, "config.json"),
         os.path.join(root, "config.local.json"),
     ]
+    data_path = _find_astrbot_data_path()
+    if data_path:
+        persistent = os.path.join(
+            data_path, "plugin_data", "astrbot_plugin_grok_web_search", "skill"
+        )
+        paths += [
+            os.path.join(persistent, "config.json"),
+            os.path.join(persistent, "config.local.json"),
+        ]
+    return paths
 
 
 def _load_json_file(path: str) -> dict[str, Any]:
@@ -302,279 +227,25 @@ def _parse_json_object(raw: str, *, label: str) -> dict[str, Any]:
     return value
 
 
-def _parse_sse_response(raw_text: str) -> dict[str, Any] | None:
-    """解析 SSE 流式响应，合并所有 chunk 的内容"""
-    chunks: list[dict[str, Any]] = []
-    for line in raw_text.splitlines():
-        line = line.strip()
-        if not line or line.startswith(":"):
-            continue
-        if line.startswith("data:"):
-            data_str = line[5:].strip()
-            if data_str == "[DONE]":
-                continue
-            try:
-                chunk = json.loads(data_str)
-                if isinstance(chunk, dict):
-                    chunks.append(chunk)
-            except json.JSONDecodeError:
-                continue
-
-    if not chunks:
-        return None
-
-    # 合并所有 chunk 的 delta content
-    merged_content = ""
-    model_name = ""
-    usage_info = {}
-
-    for chunk in chunks:
-        if not model_name:
-            model_name = chunk.get("model", "")
-        if chunk.get("usage"):
-            usage_info = chunk["usage"]
-
-        choices = chunk.get("choices", [])
-        if choices and isinstance(choices, list):
-            choice = choices[0]
-            delta = choice.get("delta", {})
-            if delta and isinstance(delta, dict):
-                content = delta.get("content", "")
-                if content:
-                    merged_content += content
-
-    return {
-        "choices": [{"message": {"content": merged_content}}],
-        "model": model_name,
-        "usage": usage_info,
-    }
+async def _run_search(get_cfg, *, query: str, **kwargs) -> dict[str, Any]:
+    """搜索入口：走插件共享编排（含超时/模型/提示词/重试与代理语义）。"""
+    return await execute_search(get_cfg, query, use_retry=False, **kwargs)
 
 
-def _request_chat_completions(
-    *,
-    base_url: str,
-    api_key: str,
-    model: str,
-    query: str,
-    timeout_seconds: float,
-    reasoning_effort: str | None,
-    reasoning_budget_tokens: int | None,
-    extra_headers: dict[str, Any],
-    extra_body: dict[str, Any],
-    stream: bool = False,
-    images: list[str] | None = None,
-    system_prompt: str | None = None,
-) -> dict[str, Any]:
-    url = f"{_normalize_base_url(base_url)}/v1/chat/completions"
-
-    system = system_prompt if system_prompt is not None else DEFAULT_JSON_SYSTEM_PROMPT
-
-    # 注入时间上下文
-    time_context = get_local_time_info()
-    enriched_query = f"{time_context}\n{query}"
-
-    # Build user message: multimodal format when images are present
-    if images:
-        user_content: list[dict[str, Any]] = [{"type": "text", "text": enriched_query}]
-        for img_b64 in images:
-            result = _normalize_image(img_b64)
-            if result is None:
-                return {
-                    "error": "❌ 图片格式不支持。Grok 仅支持 JPEG、PNG、GIF、WebP 格式，"
-                    "请转换后再试。",
-                    "error_hint": "用户提供的图片格式无法识别或不受 xAI API 支持，"
-                    "请提示用户转换为 JPEG/PNG/GIF/WebP 格式后重试。",
-                }
-            mime, img_b64 = result
-            user_content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{img_b64}"},
-                }
-            )
-        user_message: dict[str, Any] = {"role": "user", "content": user_content}
-    else:
-        user_message = {"role": "user", "content": enriched_query}
-
-    body: dict[str, Any] = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            user_message,
-        ],
-        "temperature": 0.2,
-        "stream": stream,
-    }
-
-    # 添加思考模式参数
-    if reasoning_effort:
-        body["reasoning_effort"] = reasoning_effort
-        if reasoning_budget_tokens:
-            body["reasoning_budget_tokens"] = reasoning_budget_tokens
-
-    # 合并 extra_body，保护核心字段不被覆盖
-    _protected = {
-        "model",
-        "messages",
-        "stream",
-        "reasoning_effort",
-        "reasoning_budget_tokens",
-    }
-    for _key, _value in extra_body.items():
-        if _key not in _protected:
-            body[_key] = _value
-
-    headers: dict[str, str] = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    for key, value in extra_headers.items():
-        headers[str(key)] = str(value)
-
-    req = urllib.request.Request(
+async def _run_fetch(get_cfg, *, url: str, model: str) -> dict[str, Any]:
+    """网页读取入口：始终走 Chat 协议与独立抓取提示词，不自动重试。"""
+    _, _, grok_fetch = _load_api()
+    return await grok_fetch(
         url=url,
-        data=_compact_json(body).encode("utf-8"),
-        headers=headers,
-        method="POST",
+        base_url=get_cfg("base_url", ""),
+        api_key=get_cfg("api_key", ""),
+        model=model,
+        timeout=float(get_cfg("timeout_seconds", 60) or 60.0),
+        extra_body=get_cfg("extra_body", "") or None,
+        extra_headers=get_cfg("extra_headers", "") or None,
+        proxy=str(get_cfg("proxy", "") or "").strip() or None,
+        max_retries=0,
     )
-    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-        raw_text = resp.read().decode("utf-8", errors="replace")
-        content_type = resp.headers.get("Content-Type", "")
-
-        # 检查是否为 SSE 流式响应
-        is_sse = "text/event-stream" in content_type or raw_text.strip().startswith(
-            "data:"
-        )
-
-        if is_sse:
-            parsed = _parse_sse_response(raw_text)
-            if parsed:
-                return parsed
-            raise ValueError("SSE 流式响应解析失败")
-
-        return json.loads(raw_text)
-
-
-def _request_responses_api(
-    *,
-    base_url: str,
-    api_key: str,
-    model: str,
-    query: str,
-    timeout_seconds: float,
-    extra_headers: dict[str, Any],
-    extra_body: dict[str, Any],
-    images: list[str] | None = None,
-    system_prompt: str | None = None,
-) -> dict[str, Any]:
-    """通过 xAI Responses API (/v1/responses) 发起搜索请求"""
-    url = f"{_normalize_base_url(base_url)}/v1/responses"
-
-    system = system_prompt if system_prompt is not None else DEFAULT_JSON_SYSTEM_PROMPT
-
-    # 注入时间上下文
-    time_context = get_local_time_info()
-    enriched_query = f"{time_context}\n{query}"
-
-    # Build user input for Responses API
-    if images:
-        user_content: list[dict[str, Any]] = [
-            {"type": "input_text", "text": enriched_query}
-        ]
-        for img_b64 in images:
-            result = _normalize_image(img_b64)
-            if result is None:
-                return {
-                    "error": "❌ 图片格式不支持。Grok 仅支持 JPEG、PNG、GIF、WebP 格式，"
-                    "请转换后再试。",
-                    "error_hint": "用户提供的图片格式无法识别或不受 xAI API 支持，"
-                    "请提示用户转换为 JPEG/PNG/GIF/WebP 格式后重试。",
-                }
-            mime, img_b64 = result
-            user_content.append(
-                {
-                    "type": "input_image",
-                    "image_url": f"data:{mime};base64,{img_b64}",
-                    "detail": "high",
-                }
-            )
-        user_input: str | list[dict[str, Any]] = user_content
-    else:
-        user_input = enriched_query
-
-    body: dict[str, Any] = {
-        "model": model,
-        "input": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_input},
-        ],
-        "tools": [
-            {"type": "web_search"},
-            {"type": "x_search"},
-        ],
-    }
-
-    # extra_body 合并（保护核心字段）
-    protected_keys = {"model", "input", "tools", "stream"}
-    for key, value in extra_body.items():
-        if key not in protected_keys:
-            body[key] = value
-
-    headers: dict[str, str] = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    for key, value in extra_headers.items():
-        headers[str(key)] = str(value)
-
-    req = urllib.request.Request(
-        url=url,
-        data=_compact_json(body).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-        raw_text = resp.read().decode("utf-8", errors="replace")
-        return json.loads(raw_text)
-
-
-def _parse_responses_api_result(
-    resp: dict[str, Any],
-) -> tuple[str, list[dict[str, Any]]]:
-    """解析 Responses API 响应，提取 message 文本和 citations
-
-    Returns:
-        (message_text, citations_list)
-    """
-    message = ""
-    citations: list[dict[str, Any]] = []
-
-    output = resp.get("output", [])
-    for item in output:
-        if item.get("type") == "message":
-            for content_item in item.get("content", []):
-                if content_item.get("type") == "output_text":
-                    message = content_item.get("text", "")
-                    for ann in content_item.get("annotations", []):
-                        if ann.get("type") == "url_citation":
-                            citations.append(
-                                {
-                                    "url": ann.get("url", ""),
-                                    "title": ann.get("title", ""),
-                                }
-                            )
-                    break
-            break
-
-    # 提取顶层 citations（纯 URL 列表）
-    top_citations = resp.get("citations", [])
-    if isinstance(top_citations, list):
-        for url_str in top_citations:
-            if isinstance(url_str, str) and url_str.startswith("http"):
-                if not any(c.get("url") == url_str for c in citations):
-                    citations.append({"url": url_str, "title": ""})
-
-    return message, citations
 
 
 def _write_output(result: dict[str, Any], mode: str, evidence_text: str = "") -> None:
@@ -588,6 +259,40 @@ def _write_output(result: dict[str, Any], mode: str, evidence_text: str = "") ->
         if evidence_text:
             result["evidence"] = evidence_text
     sys.stdout.write(_compact_json(result))
+
+
+def _error_output(
+    *,
+    error: str,
+    detail: str,
+    config_path: str,
+    config_status: str,
+    model: str,
+    started: float,
+) -> dict[str, Any]:
+    """旧诊断字段兼容的错误输出；LLM 输出只保留类别。"""
+    return {
+        "ok": False,
+        "error": error,
+        "detail": detail,
+        "config_path": config_path,
+        "config_status": config_status if config_status else "OK",
+        "model": model,
+        "elapsed_ms": int((time.time() - started) * 1000),
+    }
+
+
+def _categorize_failure(result: dict[str, Any]) -> tuple[str, str]:
+    """把共享结果字典映射回旧诊断类别（HTTP <code>/api_error/...）。"""
+    status = result.get("status")
+    if isinstance(status, int):
+        return f"HTTP {status}", str(result.get("raw") or result.get("error") or "")
+    kind = result.get("error_kind")
+    if kind == "api":
+        return "api_error", str(result.get("error") or "")
+    if kind == "empty":
+        return "empty_response", str(result.get("error") or "")
+    return "request_failed", str(result.get("error") or "")
 
 
 def main() -> int:
@@ -705,8 +410,8 @@ def main() -> int:
 
     # 优先尝试加载 AstrBot 插件配置
     astrbot_config, astrbot_config_status = _load_astrbot_plugin_config()
-    if astrbot_config and _normalize_api_key(
-        str(_cfg(astrbot_config, "api_key") or "")
+    if astrbot_config and normalize_api_key(
+        str(config_value(astrbot_config, "api_key") or "")
     ):
         config_path = "[AstrBot Plugin Config]"
         config = astrbot_config
@@ -734,8 +439,8 @@ def main() -> int:
                 fallback_path = candidate
                 fallback_config = candidate_config
 
-            candidate_key = _normalize_api_key(
-                str(_cfg(candidate_config, "api_key") or "")
+            candidate_key = normalize_api_key(
+                str(config_value(candidate_config, "api_key") or "")
             )
             if candidate_key:
                 config_path = candidate
@@ -749,22 +454,20 @@ def main() -> int:
         if not config_path:
             config_path = _default_skill_config_paths()[0]
 
-    base_url = _normalize_base_url_value(
+    base_url = normalize_base_url(
         args.base_url.strip()
         or os.environ.get("GROK_BASE_URL", "").strip()
-        or str(_cfg(config, "base_url") or "").strip()
+        or str(config_value(config, "base_url") or "").strip()
     )
-    api_key = _normalize_api_key(
+    api_key = normalize_api_key(
         args.api_key.strip()
         or os.environ.get("GROK_API_KEY", "").strip()
-        or str(_cfg(config, "api_key") or "").strip()
+        or str(config_value(config, "api_key") or "").strip()
     )
-    model = (
-        args.model.strip()
-        or os.environ.get("GROK_MODEL", "").strip()
-        or str(_cfg(config, "model") or "").strip()
-        or DEFAULT_MODEL
-    )
+    # 显式模型（CLI/env）优先于模式与全局配置；未指定时按模式解析
+    explicit_model = (
+        args.model.strip() or os.environ.get("GROK_MODEL", "").strip()
+    ).strip()
 
     # 使用共享规范化函数统一校验所有搜索选项
     opts = normalize_search_options(
@@ -786,16 +489,6 @@ def main() -> int:
     start_date = str(opts["start_date"])
     end_date = str(opts["end_date"])
 
-    # 解析模式及对应模型
-    mode = resolve_search_mode(search_depth)
-    mode_model = resolve_mode_model(
-        str(_cfg(config, f"{mode}_model") or ""),
-        model,
-    )
-
-    # 推理参数
-    reasoning_effort, reasoning_budget_tokens = resolve_reasoning_params(search_depth)
-
     timeout_seconds = args.timeout_seconds
     if not timeout_seconds:
         try:
@@ -804,17 +497,14 @@ def main() -> int:
             timeout_seconds = 0.0
     if not timeout_seconds:
         try:
-            timeout_seconds = float(_cfg(config, "timeout_seconds") or 0)
+            timeout_seconds = float(config_value(config, "timeout_seconds") or 0)
         except (ValueError, TypeError):
             timeout_seconds = 0.0
     if not timeout_seconds or timeout_seconds <= 0:
         timeout_seconds = 60.0
 
-    # 解析 Responses API 开关
-    use_responses_api = False
-    cfg_use_responses = _cfg(config, "use_responses_api")
-    if isinstance(cfg_use_responses, bool):
-        use_responses_api = cfg_use_responses
+    # Responses API 开关由共享编排读取（use_responses_api 仅作用于搜索模式，
+    # fetch 始终走 Chat 协议与独立解析分支）。
 
     if not base_url:
         sys.stderr.write(
@@ -835,19 +525,25 @@ def main() -> int:
         return 2
 
     try:
-        extra_body: dict[str, Any] = {}
-        cfg_extra_body = _cfg(config, "extra_body")
-        if isinstance(cfg_extra_body, dict):
-            extra_body.update(cfg_extra_body)
+        # 插件 extra_body/extra_headers 支持 dict 与 JSON 文本两种配置形态（共享语义），
+        # env / CLI 单次覆盖按优先级合并，不回写插件配置。
+        extra_body, body_error = parse_json_setting(
+            config_value(config, "extra_body", "")
+        )
+        if body_error:
+            sys.stderr.write(f"Invalid extra_body config: {body_error}\n")
+            return 2
         extra_body.update(_load_json_env("GROK_EXTRA_BODY_JSON"))
         extra_body.update(
             _parse_json_object(args.extra_body_json, label="--extra-body-json")
         )
 
-        extra_headers: dict[str, Any] = {}
-        cfg_extra_headers = _cfg(config, "extra_headers")
-        if isinstance(cfg_extra_headers, dict):
-            extra_headers.update(cfg_extra_headers)
+        extra_headers, headers_error = parse_json_setting(
+            config_value(config, "extra_headers", "")
+        )
+        if headers_error:
+            sys.stderr.write(f"Invalid extra_headers config: {headers_error}\n")
+            return 2
         extra_headers.update(_load_json_env("GROK_EXTRA_HEADERS_JSON"))
         extra_headers.update(
             _parse_json_object(args.extra_headers_json, label="--extra-headers-json")
@@ -855,6 +551,20 @@ def main() -> int:
     except Exception as e:
         sys.stderr.write(f"Invalid JSON: {e}\n")
         return 2
+
+    # 单次请求覆盖注入共享配置读取器（CLI/env 覆盖与扩展参数；插件配置仍作为兜底来源）
+    overrides: dict[str, Any] = {
+        "base_url": base_url,
+        "api_key": api_key,
+        "timeout_seconds": timeout_seconds,
+        "extra_body": extra_body,
+        "extra_headers": extra_headers,
+    }
+
+    def get_cfg(key: str, default: Any = None) -> Any:
+        if key in overrides:
+            return overrides[key]
+        return config_value(config, key, default)
 
     # Read image files and convert to base64
     images: list[str] = []
@@ -894,219 +604,97 @@ def main() -> int:
     evidence_text = str(reverse_agg.get("evidence_text") or "") if reverse_agg else ""
 
     if is_fetch_mode:
-        query = f"{fetch_url}\n获取该网页内容并返回其结构化 Markdown 格式"
+        # fetch 模式使用全局模型（显式覆盖优先），不套用模式模型
+        model = (
+            explicit_model
+            or str(config_value(config, "model") or "").strip()
+            or DEFAULT_MODEL
+        )
     else:
-        query = args.query
-        # 构建时间约束提示词并注入搜索引导
-        time_constraints = build_search_time_constraints(
-            topic=topic,
-            days=days,
-            time_range=time_range,
-            start_date=start_date,
-            end_date=end_date,
+        model = resolve_model(
+            get_cfg, resolve_search_mode(search_depth), explicit_model
         )
-        query = build_search_query(query, search_depth, max_results, time_constraints)
 
-        # 反向搜图证据附加在查询末尾，供 Grok 核验；失败/跳过说明一并提供
-        if evidence_text:
-            query = f"{query}\n\n{evidence_text}"
-
-    system_prompt = (
-        FETCH_SYSTEM_PROMPT
-        if is_fetch_mode
-        else resolve_system_prompt(
-            _cfg(config, "custom_system_prompt"), DEFAULT_JSON_SYSTEM_PROMPT
+    def _emit_failure(error: str, detail: str) -> None:
+        _write_output(
+            _error_output(
+                error=error,
+                detail=detail,
+                config_path=config_path,
+                config_status=astrbot_config_status,
+                model=model,
+                started=started,
+            ),
+            args.output,
+            evidence_text,
         )
-    )
-    request_uses_responses = use_responses_api and not is_fetch_mode
 
     try:
-        if request_uses_responses:
-            resp = _request_responses_api(
-                base_url=base_url,
-                api_key=api_key,
-                model=mode_model,
-                query=query,
-                timeout_seconds=timeout_seconds,
-                extra_headers=extra_headers,
-                extra_body=extra_body,
-                images=images or None,
-                system_prompt=system_prompt,
-            )
+        if is_fetch_mode:
+            result = asyncio.run(_run_fetch(get_cfg, url=fetch_url, model=model))
         else:
-            # Chat Completions 模式（search 和 fetch 都用这个）
-            resp = _request_chat_completions(
-                base_url=base_url,
-                api_key=api_key,
-                model=mode_model if not is_fetch_mode else model,
-                query=query,
-                timeout_seconds=timeout_seconds,
-                reasoning_effort=reasoning_effort if not is_fetch_mode else None,
-                reasoning_budget_tokens=reasoning_budget_tokens
-                if not is_fetch_mode
-                else None,
-                stream=bool(_cfg(config, "enable_stream"))
-                if not is_fetch_mode
-                else False,
-                extra_headers=extra_headers,
-                extra_body=extra_body,
-                images=images or None,
-                system_prompt=system_prompt,
+            query = args.query
+            # 反向搜图证据附加在查询末尾，供 Grok 核验；失败/跳过说明一并提供
+            if evidence_text:
+                query = f"{query}\n\n{evidence_text}"
+            result = asyncio.run(
+                _run_search(
+                    get_cfg,
+                    query=query,
+                    images=images or None,
+                    search_depth=search_depth,
+                    max_results=max_results,
+                    topic=topic,
+                    days=days,
+                    time_range=time_range,
+                    start_date=start_date,
+                    end_date=end_date,
+                    explicit_model=explicit_model,
+                )
             )
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
-        out = {
-            "ok": False,
-            "error": f"HTTP {getattr(e, 'code', None)}",
-            "detail": raw or str(e),
-            "config_path": config_path,
-            "config_status": astrbot_config_status if astrbot_config_status else "OK",
-            "model": model,
-            "elapsed_ms": int((time.time() - started) * 1000),
-        }
-        _write_output(out, args.output, evidence_text)
+    except ImportError as e:
+        _emit_failure(
+            "request_failed",
+            f"缺少运行依赖（宿主环境通常已内置）: {e}",
+        )
         return 1
     except Exception as e:
-        out = {
-            "ok": False,
-            "error": "request_failed",
-            "detail": str(e),
-            "config_path": config_path,
-            "config_status": astrbot_config_status if astrbot_config_status else "OK",
-            "model": model,
-            "elapsed_ms": int((time.time() - started) * 1000),
-        }
-        _write_output(out, args.output, evidence_text)
+        _emit_failure("request_failed", str(e))
         return 1
 
-    # 检查 API 错误响应
-    if "error" in resp and isinstance(resp.get("error"), (dict, str)):
-        error_info = resp["error"]
-        error_msg = (
-            error_info.get("message", str(error_info))
-            if isinstance(error_info, dict)
-            else str(error_info)
-        )
-        out = {
-            "ok": False,
-            "error": "api_error",
-            "detail": error_msg,
-            "config_path": config_path,
-            "config_status": astrbot_config_status if astrbot_config_status else "OK",
-            "model": model,
-            "elapsed_ms": int((time.time() - started) * 1000),
-        }
-        _write_output(out, args.output, evidence_text)
+    if not result.get("ok"):
+        error, detail = _categorize_failure(result)
+        _emit_failure(error, detail)
         return 1
 
-    # 根据 API 模式解析响应
-    message = ""
-    api_citations: list[dict[str, Any]] = []
-
-    if request_uses_responses:
-        message, api_citations = _parse_responses_api_result(resp)
-    else:
-        try:
-            choice0 = (resp.get("choices") or [{}])[0]
-            msg = choice0.get("message") or {}
-            message = msg.get("content") or ""
-        except Exception:
-            message = ""
-
-    # 空响应检查
-    if not message:
-        out = {
-            "ok": False,
-            "error": "empty_response",
-            "detail": "API 返回空内容",
-            "config_path": config_path,
-            "config_status": astrbot_config_status if astrbot_config_status else "OK",
-            "model": model,
-            "elapsed_ms": int((time.time() - started) * 1000),
-        }
-        _write_output(out, args.output, evidence_text)
+    message_empty = not str(result.get("content") or "")
+    if message_empty:
+        _emit_failure("empty_response", "API 返回空内容")
         return 1
 
-    # Fetch 模式：直接返回原始 Markdown 内容，不做 JSON 解析
     if is_fetch_mode:
-        out = {
+        out: dict[str, Any] = {
             "ok": True,
             "fetch_url": fetch_url,
             "config_path": config_path,
-            "model": resp.get("model") or model,
-            "content": strip_stream_decorations(message),
-            "usage": resp.get("usage") or {},
-            "elapsed_ms": int((time.time() - started) * 1000),
+            "model": result.get("model") or model,
+            "content": result.get("content", ""),
+            "usage": result.get("usage") or {},
+            "elapsed_ms": result.get("elapsed_ms", 0),
         }
         _write_output(out, args.output)
         return 0
-
-    parsed = _coerce_json_object(message)
-    sources: list[dict[str, Any]] = []
-    content = ""
-    raw = ""
-    # 去重集合提到分支外，JSON 与非 JSON 两条路径统一按 url 保序去重
-    seen_urls: set[str] = set()
-
-    if parsed is not None:
-        content = strip_stream_decorations(str(parsed.get("content") or ""))
-        src = parsed.get("sources")
-        if isinstance(src, list):
-            for item in src:
-                if not isinstance(item, dict):
-                    continue
-                url = str(item.get("url") or "").strip()
-                if not url or url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                sources.append(
-                    {
-                        "url": url,
-                        "title": str(item.get("title") or ""),
-                        "snippet": str(item.get("snippet") or ""),
-                    }
-                )
-        if not sources:
-            for url in _extract_urls(content):
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                sources.append({"url": url, "title": "", "snippet": ""})
-    else:
-        # 非 JSON 响应：将原始消息作为 content
-        raw = message
-        content = strip_stream_decorations(message)
-        for url in _extract_urls(message):
-            if url in seen_urls:
-                continue
-            seen_urls.add(url)
-            sources.append({"url": url, "title": "", "snippet": ""})
-
-    # 补充 Responses API 的 citations 到 sources
-    if not sources and api_citations:
-        for cit in api_citations:
-            url = str(cit.get("url") or "").strip()
-            if not url or url in seen_urls:
-                continue
-            seen_urls.add(url)
-            sources.append(
-                {
-                    "url": url,
-                    "title": str(cit.get("title") or ""),
-                    "snippet": "",
-                }
-            )
 
     out = {
         "ok": True,
         "query": args.query or fetch_url,
         "config_path": config_path,
-        "model": resp.get("model") or model,
-        "content": content,
-        "sources": sources,
-        "raw": raw,
-        "usage": resp.get("usage") or {},
-        "elapsed_ms": int((time.time() - started) * 1000),
+        "model": result.get("model") or model,
+        "content": result.get("content", ""),
+        "sources": result.get("sources", []),
+        "raw": result.get("raw", ""),
+        "usage": result.get("usage") or {},
+        "elapsed_ms": result.get("elapsed_ms", 0),
     }
     if reverse_agg:
         out["reverse_image_search"] = {
