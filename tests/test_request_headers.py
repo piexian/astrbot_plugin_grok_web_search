@@ -441,7 +441,7 @@ def test_plugin_init_injects_host_headers():
                 ),
                 ast.ClassDef(
                     name="Plugin",
-                    bases=[ast.Name(id="_StarShim")],
+                    bases=[ast.Name(id="_StarShim", ctx=ast.Load())],
                     keywords=[],
                     body=[method],
                     decorator_list=[],
