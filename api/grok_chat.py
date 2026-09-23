@@ -345,6 +345,8 @@ async def grok_fetch(
         {
             "ok": bool,
             "content": str,      # Markdown 格式的网页内容
+            "model": str,        # 服务端实际模型（缺失时回退请求模型）
+            "usage": dict,       # 服务端 token 用量
             "error": str,        # 错误信息（失败时）
             "elapsed_ms": int,
         }
@@ -368,10 +370,10 @@ async def grok_fetch(
     if not result.get("ok"):
         return result
 
-    content = result.get("content", "")
-
     return {
         "ok": True,
-        "content": content,
+        "content": result.get("content", ""),
+        "model": result.get("model") or model,
+        "usage": result.get("usage") or {},
         "elapsed_ms": result.get("elapsed_ms", 0),
     }

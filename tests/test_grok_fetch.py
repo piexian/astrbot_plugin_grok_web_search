@@ -80,6 +80,8 @@ def test_fetch_preserves_entire_document(monkeypatch, page, stream):
     )
     assert result["ok"] is True
     assert result["content"] == page
+    assert result["model"] == tool.DEFAULT_MODEL
+    assert result["usage"] == {}
     body = calls[0][1]["json"]
     assert body["messages"][0]["content"] == tool.FETCH_SYSTEM_PROMPT
     assert "parse_json_response" not in body
@@ -114,6 +116,31 @@ def test_fetch_does_not_fabricate_missing_page(monkeypatch, message):
     else:
         assert result["ok"] is False
         assert "空响应" in result["error"] or "为空" in result["error"]
+
+
+def test_fetch_passes_server_model_and_usage(monkeypatch):
+    """共享 fetch 透传服务端实际模型与 token 用量（Skill 诊断 JSON 依赖）。"""
+    calls = []
+    payload = json.dumps(
+        {
+            "choices": [{"message": {"content": PAGE}}],
+            "model": "grok-4-fast-fixture",
+            "usage": {"total_tokens": 777, "prompt_tokens": 400},
+        }
+    )
+    response = _Response(payload)
+    monkeypatch.setattr(
+        chat.aiohttp, "ClientSession", lambda: _Session(response, calls)
+    )
+    result = asyncio.run(
+        chat.grok_fetch(
+            "https://example.org/article", "https://example.invalid", "test-fixture"
+        )
+    )
+    assert result["ok"] is True
+    assert result["model"] == "grok-4-fast-fixture"
+    assert result["usage"] == {"total_tokens": 777, "prompt_tokens": 400}
+    assert result["content"] == PAGE
 
 
 def test_fetch_http_failure_is_preserved_without_retry(monkeypatch):

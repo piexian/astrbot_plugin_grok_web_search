@@ -430,6 +430,74 @@ def test_fetch_uses_chat_and_preserves_markdown(skill, monkeypatch, capsys, outp
 
 
 @pytest.mark.parametrize("output", ["json", "llm"])
+def test_fetch_real_adapter_end_to_end_preserves_model_and_usage(
+    skill, monkeypatch, capsys, output
+):
+    """真实 fetch → CLI：默认 JSON 保留 model/usage，LLM 输出仅保留正文。"""
+    _configure(skill, monkeypatch, responses=True)
+    api_chat, api_resp = _api_modules()
+
+    payload = json.dumps(
+        {
+            "choices": [{"message": {"content": PAGE}}],
+            "model": "grok-4-fast-fixture",
+            "usage": {"total_tokens": 777},
+        }
+    )
+
+    class _Resp:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def text(self):
+            return payload
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def post(self, url, **kwargs):
+            return _Resp()
+
+    # 打桩 HTTP 传输层，api.grok_chat.grok_fetch 保持真实实现
+    monkeypatch.setattr(api_chat.aiohttp, "ClientSession", lambda: _Session())
+
+    def wrong_endpoint(**kwargs):
+        pytest.fail("Fetch must not use the search pipeline")
+
+    monkeypatch.setattr(api_resp, "grok_responses_search", wrong_endpoint)
+
+    output_args = ["--output", "llm"] if output == "llm" else []
+    rc, out, _ = _run(
+        skill,
+        monkeypatch,
+        capsys,
+        "--fetch-url",
+        "https://example.org/article",
+        *output_args,
+    )
+    assert rc == 0 and out["ok"] is True
+    assert out["content"] == PAGE  # Markdown 原文保留
+    assert out["fetch_url"] == "https://example.org/article"
+    if output == "llm":
+        assert set(out) == {"ok", "content", "fetch_url"}
+        assert "model" not in out and "usage" not in out
+        assert "tokens" not in json.dumps(out)
+    else:
+        assert out["model"] == "grok-4-fast-fixture"
+        assert out["usage"]["total_tokens"] == 777
+
+
+@pytest.mark.parametrize("output", ["json", "llm"])
 @pytest.mark.parametrize("failure", ["http", "request", "api", "empty"])
 def test_failure_output_keeps_status_not_raw_diagnostics(
     skill, monkeypatch, capsys, output, failure
