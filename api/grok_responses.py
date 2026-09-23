@@ -13,21 +13,40 @@ from typing import Any
 
 import aiohttp
 
-from ..tool.tool import (
-    DEFAULT_JSON_SYSTEM_PROMPT,
-    DEFAULT_MODEL,
-    IMAGE_UNSUPPORTED_ERROR,
-    build_headers,
-    build_user_content,
-    format_http_error,
-    get_local_time_info,
-    make_error_result,
-    merge_extra_body,
-    normalize_base_url,
-    parse_sources_from_message,
-    retry_request,
-    validate_config,
-)
+try:  # 插件包上下文（相对导入）
+    from ..tool.tool import (
+        DEFAULT_JSON_SYSTEM_PROMPT,
+        DEFAULT_MODEL,
+        IMAGE_UNSUPPORTED_ERROR,
+        build_headers,
+        build_user_content,
+        format_http_error,
+        get_local_time_info,
+        make_error_result,
+        merge_citations_into_sources,
+        merge_extra_body,
+        normalize_base_url,
+        parse_sources_from_message,
+        retry_request,
+        validate_config,
+    )
+except ImportError:  # Skill 安装态的顶层包上下文
+    from tool.tool import (
+        DEFAULT_JSON_SYSTEM_PROMPT,
+        DEFAULT_MODEL,
+        IMAGE_UNSUPPORTED_ERROR,
+        build_headers,
+        build_user_content,
+        format_http_error,
+        get_local_time_info,
+        make_error_result,
+        merge_citations_into_sources,
+        merge_extra_body,
+        normalize_base_url,
+        parse_sources_from_message,
+        retry_request,
+        validate_config,
+    )
 
 
 async def grok_responses_search(
@@ -182,6 +201,7 @@ async def grok_responses_search(
                 f"API 返回错误: {error_msg}",
                 started,
                 raw=json.dumps(data, ensure_ascii=False)[:2000],
+                kind="api",
             )
 
         # Responses API 响应格式：
@@ -237,23 +257,27 @@ async def grok_responses_search(
             started,
             retry_count,
             raw=json.dumps(data, ensure_ascii=False)[:2000] if data else "",
+            kind="empty",
         )
 
     # 解析 sources
     parsed_msg = parse_sources_from_message(message)
     sources = parsed_msg["sources"]
 
-    # 如果没有从 JSON 中提取到 sources，使用 API 返回的 citations
-    if not sources and citations:
-        for cit in citations:
-            sources.append(
-                {
-                    "url": cit.get("url", ""),
-                    "title": cit.get("title", ""),
-                    "snippet": "",
-                }
-            )
+    # citations 内部按 URL 保序去重（annotations 与顶层 citations 可能重复）
+    deduped_citations: list[dict[str, str]] = []
+    seen_citation_urls: set[str] = set()
+    for cit in citations:
+        url = str(cit.get("url") or "").strip()
+        if not url or url in seen_citation_urls:
+            continue
+        seen_citation_urls.add(url)
+        deduped_citations.append(cit)
+    citations = deduped_citations
 
+    # 没有从 JSON 中提取到 sources 时，统一出口合并 API citations（按 URL 保序去重）
+    if not sources:
+        sources = merge_citations_into_sources(sources, citations)
     return {
         "ok": True,
         "content": parsed_msg["content"],

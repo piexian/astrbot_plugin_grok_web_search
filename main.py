@@ -8,10 +8,10 @@ AstrBot 插件：Grok 联网搜索
 """
 
 import asyncio
+import contextlib
 import os
-import shutil
 import tempfile
-import zipfile
+import threading
 from pathlib import Path
 
 import aiohttp
@@ -26,8 +26,7 @@ from astrbot.core.utils.quoted_message.chain_parser import (
     _extract_text_from_component_chain,
 )
 
-from .api.grok_chat import grok_fetch, grok_search
-from .api.grok_responses import grok_responses_search
+from .api.grok_chat import grok_fetch
 from .api.saucenao import saucenao_search
 from .api.serpapi_lens import serpapi_lens_search
 
@@ -53,8 +52,12 @@ from .tool.card_render import (
     init_fonts,
     render_search_card,
 )
-from .tool.card_render import (
-    set_logger as set_card_logger,
+from .tool.config import (
+    CONFIG_DEFAULTS,
+    CONFIG_PATHS,
+    config_value,
+    migrate_legacy_config,
+    parse_json_setting,
 )
 from .tool.image_search import (
     DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
@@ -62,91 +65,33 @@ from .tool.image_search import (
     parse_cmd_args,
     run_reverse_image_search,
 )
+from .tool.search_service import execute_search
+from .tool.skill_package import install_skill_package, sync_to_persistent
 from .tool.tool import (
     CMD_CARD_SYSTEM_PROMPT,
     CMD_TEXT_SYSTEM_PROMPT,
-    DEFAULT_JSON_SYSTEM_PROMPT,
     DEFAULT_MODEL,
     build_headers,
     build_referenced_query,
-    build_search_query,
-    build_search_time_constraints,
     markdown_to_plain,
     normalize_api_key,
     normalize_base_url,
-    normalize_search_options,
-    parse_json_config,
-    resolve_mode_model,
-    resolve_reasoning_params,
-    resolve_search_mode,
     resolve_system_prompt,
     safe_number,
+    set_default_headers,
 )
 
 PLUGIN_NAME = "astrbot_plugin_grok_web_search"
 FORWARD_SENDER_NAME = "Grok搜索助手"
 
-CONFIG_PATHS = {
-    "model": ("provider_settings", "model"),
-    "use_responses_api": ("provider_settings", "use_responses_api"),
-    "quick_model": ("provider_settings", "quick_model"),
-    "detailed_model": ("provider_settings", "detailed_model"),
-    "deep_model": ("provider_settings", "deep_model"),
-    "base_url": ("connection_settings", "base_url"),
-    "api_key": ("connection_settings", "api_key"),
-    "timeout_seconds": ("connection_settings", "timeout_seconds"),
-    "proxy": ("connection_settings", "proxy"),
-    "max_retries": ("request_settings", "max_retries"),
-    "retry_delay": ("request_settings", "retry_delay"),
-    "retryable_status_codes": ("request_settings", "retryable_status_codes"),
-    "custom_system_prompt": ("request_settings", "custom_system_prompt"),
-    "enable_stream": ("request_settings", "enable_stream"),
-    "extra_body": ("advanced_settings", "extra_body"),
-    "extra_headers": ("advanced_settings", "extra_headers"),
-    "show_sources": ("output_settings", "show_sources"),
-    "render_as_image": ("output_settings", "render_as_image"),
-    "markdown_plain_fallback": ("output_settings", "markdown_plain_fallback"),
-    "send_as_forward": ("output_settings", "send_as_forward"),
-    "card_theme": ("output_settings", "card_theme"),
-    "max_sources": ("output_settings", "max_sources"),
-    "enable_fetch": ("tool_settings", "enable_fetch"),
-    "enable_skill": ("tool_settings", "enable_skill"),
-    "serpapi_api_key": ("reverse_image_search", "serpapi_api_key"),
-    "saucenao_api_key": ("reverse_image_search", "saucenao_api_key"),
-    "image_search_timeout": ("reverse_image_search", "image_search_timeout"),
-    "image_search_max_images": ("reverse_image_search", "image_search_max_images"),
-}
+# 搜索编排已上移到 tool.search_service，此处保留引用便于插件内直接使用
+__all__ = ["GrokSearchPlugin", "CONFIG_PATHS", "CONFIG_DEFAULTS"]
 
-CONFIG_DEFAULTS = {
-    "model": DEFAULT_MODEL,
-    "use_responses_api": False,
-    "quick_model": "",
-    "detailed_model": "",
-    "deep_model": "",
-    "base_url": "",
-    "api_key": "",
-    "timeout_seconds": 60,
-    "proxy": "",
-    "max_retries": 3,
-    "retry_delay": 1.0,
-    "retryable_status_codes": [429, 500, 502, 503, 504],
-    "custom_system_prompt": "",
-    "enable_stream": False,
-    "extra_body": "",
-    "extra_headers": "",
-    "show_sources": False,
-    "render_as_image": False,
-    "markdown_plain_fallback": True,
-    "send_as_forward": False,
-    "card_theme": "auto",
-    "max_sources": 5,
-    "enable_fetch": False,
-    "enable_skill": False,
-    "serpapi_api_key": "",
-    "saucenao_api_key": "",
-    "image_search_timeout": DEFAULT_IMAGE_SEARCH_TIMEOUT,
-    "image_search_max_images": DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
-}
+# 卡片渲染串行化：Pillow 渲染是 CPU 密集操作，限制并发以控制内存峰值
+_CARD_RENDER_SEMAPHORE = asyncio.Semaphore(1)
+
+# terminate 时等待字体线程协作退出的有界时长；超时则放弃等待（线程为 daemon）
+_FONT_STOP_JOIN_SECONDS = 10.0
 
 
 def _fmt_tokens(n: int) -> str:
@@ -162,46 +107,35 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
+def _load_host_default_headers() -> dict[str, str]:
+    """可选取得宿主通用请求头（如 UA）；接口缺失或异常时返回空，不阻断请求。"""
+    try:
+        from astrbot.core.provider.headers import build_provider_headers
+
+        headers = build_provider_headers()
+    except Exception:
+        return {}
+    if not isinstance(headers, dict):
+        return {}
+    return {str(key): str(value) for key, value in headers.items()}
+
+
 class GrokSearchPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self.config = config or {}
         self._card_fonts_ready = False
-        self._font_init_task: asyncio.Task | None = None
+        self._font_thread: threading.Thread | None = None
+        self._font_job = None
+        set_default_headers(_load_host_default_headers())
         self._migrate_legacy_config()
 
     def _cfg(self, key: str, default=None):
-        path = CONFIG_PATHS.get(key)
-        if path:
-            section = self.config.get(path[0], {})
-            if isinstance(section, dict) and path[1] in section:
-                return section[path[1]]
-        return self.config.get(key, default)
+        return config_value(self.config, key, default)
 
     def _migrate_legacy_config(self) -> None:
         """Move old flat config values into the grouped schema once."""
-        changed = False
-        for key, path in CONFIG_PATHS.items():
-            if key not in self.config:
-                continue
-
-            default = CONFIG_DEFAULTS.get(key)
-            legacy_value = self.config.get(key)
-            if legacy_value == default:
-                continue
-
-            section = self.config.get(path[0])
-            if not isinstance(section, dict):
-                section = {}
-                self.config[path[0]] = section
-
-            current_value = section.get(path[1], default)
-            if current_value != default:
-                continue
-
-            section[path[1]] = legacy_value
-            self.config[key] = list(default) if isinstance(default, list) else default
-            changed = True
+        changed = migrate_legacy_config(self.config)
 
         save_config = getattr(self.config, "save_config", None)
         if changed and callable(save_config):
@@ -287,38 +221,44 @@ class GrokSearchPlugin(Star):
         except Exception as e:
             logger.warning(f"[{PLUGIN_NAME}] Failed to convert image to base64: {e}")
 
-    def _unregister_disabled_tools(self):
-        """根据配置在初始化时直接卸载不需要的 LLM Tool，避免 AI 看到无用工具"""
+    def _unregister_skill_tools(self):
+        """Skill 安装成功后接管搜索，卸载插件自身的 LLM Tool。"""
         if _llm_tools_registry is None:
             return
+        _llm_tools_registry.remove_func("grok_web_search")
+        _llm_tools_registry.remove_func("grok_web_fetch")
+        logger.info(
+            f"[{PLUGIN_NAME}] Skill 已启用，已卸载 grok_web_search 和 grok_web_fetch 工具"
+        )
 
-        if self._cfg("enable_skill", False):
-            # Skill 接管，移除所有 LLM Tool
-            _llm_tools_registry.remove_func("grok_web_search")
-            _llm_tools_registry.remove_func("grok_web_fetch")
-            logger.info(
-                f"[{PLUGIN_NAME}] Skill 已启用，已卸载 grok_web_search 和 grok_web_fetch 工具"
-            )
+    def _unregister_fetch_tool_if_disabled(self):
+        """未启用网页抓取时卸载 grok_web_fetch，保留搜索工具。"""
+        if _llm_tools_registry is None or self._cfg("enable_fetch", False):
             return
+        _llm_tools_registry.remove_func("grok_web_fetch")
+        logger.info(f"[{PLUGIN_NAME}] 网页抓取未启用，已卸载 grok_web_fetch 工具")
 
-        if not self._cfg("enable_fetch", False):
-            _llm_tools_registry.remove_func("grok_web_fetch")
-            logger.info(f"[{PLUGIN_NAME}] 网页抓取未启用，已卸载 grok_web_fetch 工具")
-
-    def _init_fonts(self):
+    def _init_fonts(self, job=None):
         """Initialize card rendering fonts (runs in background)."""
         logger.info(f"[{PLUGIN_NAME}] 正在后台初始化卡片渲染字体 ...")
         try:
             from .tool import font_loader
 
             font_loader.set_proxy(self._cfg("proxy", "") or None)
+            # 宿主通用请求头（如 UA）作为可选增强注入；缺失时不阻断下载
+            try:
+                from astrbot.core.provider.headers import build_provider_headers
+
+                font_loader.set_default_headers(build_provider_headers())
+            except Exception:
+                pass
             if get_astrbot_data_path:
                 font_dir = str(
                     Path(get_astrbot_data_path()) / "plugin_data" / PLUGIN_NAME / "font"
                 )
             else:
                 font_dir = os.path.join(os.path.dirname(__file__), "font")
-            self._card_fonts_ready = init_fonts(font_dir)
+            self._card_fonts_ready = init_fonts(font_dir, job=job)
             if self._card_fonts_ready:
                 logger.info(f"[{PLUGIN_NAME}] 卡片渲染字体已就绪: {font_dir}")
             else:
@@ -327,27 +267,41 @@ class GrokSearchPlugin(Star):
             logger.warning(f"[{PLUGIN_NAME}] 字体初始化异常: {e}")
 
     async def initialize(self):
-        """插件初始化：验证配置并处理 Skill 安装"""
-        # 在后台初始化字体，仅在开启图片渲染模式下
-        if self._cfg("render_as_image", False):
-            set_card_logger(logger)
-            self._font_init_task = asyncio.create_task(
-                asyncio.to_thread(self._init_fonts)
-            )
+        """插件初始化：验证配置并处理 Skill 安装。
 
-        # 根据配置卸载不需要的 LLM Tool
-        self._unregister_disabled_tools()
+        Skill 同步与安装均成功才卸载 LLM Tool；任一失败保留原有可用入口
+        （仍尊重 enable_fetch 开关）。
+        """
+        # 后台线程初始化字体（仅在开启图片渲染模式下）；
+        # terminate 通过作业令牌协作停止 + 线程内有界 join，不阻塞事件循环
+        if self._cfg("render_as_image", False):
+            try:
+                from .tool import font_loader
+
+                self._font_job = font_loader.begin_job()
+            except Exception:
+                self._font_job = None
+            self._font_thread = threading.Thread(
+                target=self._init_fonts,
+                args=(self._font_job,),
+                name="grok-font-init",
+                daemon=True,
+            )
+            self._font_thread.start()
 
         # 校验 base_url/api_key
         await self._validate_config()
 
-        # 首次安装：将插件目录的 skill 移动到持久化目录
-        self._migrate_skill_to_persistent()
-
+        skill_ready = False
         if self._cfg("enable_skill", False):
-            self._install_skill()
+            # 同步与安装都是工具切换门槛：同步失败不打包旧代码，安装失败不动工具
+            skill_ready = self._migrate_skill_to_persistent() and self._install_skill()
+        if skill_ready:
+            self._unregister_skill_tools()
         else:
-            self._uninstall_skill()
+            if not self._cfg("enable_skill", False):
+                self._uninstall_skill()
+            self._unregister_fetch_tool_if_disabled()
 
     async def _validate_config(self):
         """验证必要配置，并通过 v1/models 接口检查连通性"""
@@ -438,77 +392,60 @@ class GrokSearchPlugin(Star):
         """获取 Skill 持久化存储路径"""
         return self._get_plugin_data_path() / "skill"
 
-    def _migrate_skill_to_persistent(self):
-        """同步插件内置 Skill 到持久化目录，保留用户本地配置。"""
+    def _migrate_skill_to_persistent(self) -> bool:
+        """同步受管 Skill 文件到持久化目录；返回是否同步成功。
+
+        同步失败是安装门槛：失败时不用旧持久化内容打包，保留现有可用安装。
+        用户私有配置（config.json / config.local.json）不覆盖、不删除。
+        """
         source_dir = Path(__file__).parent / "skill"
         persistent_dir = self._get_skill_persistent_path()
 
         if not source_dir.exists():
-            return
+            logger.error(f"[{PLUGIN_NAME}] Skill 源文件缺失: {source_dir}")
+            return False
         if persistent_dir.is_symlink():
             logger.error(
                 f"[{PLUGIN_NAME}] Skill 持久化目录是 symlink，拒绝同步: {persistent_dir}"
             )
-            return
+            return False
 
         try:
             persistent_dir.mkdir(parents=True, exist_ok=True)
-            for source_path in source_dir.rglob("*"):
-                rel_path = source_path.relative_to(source_dir)
-                target_path = persistent_dir / rel_path
-                if source_path.is_dir():
-                    target_path.mkdir(parents=True, exist_ok=True)
-                    continue
-
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                if (
-                    rel_path.name in {"config.json", "config.local.json"}
-                    and target_path.exists()
-                ):
-                    continue
-                shutil.copy2(source_path, target_path)
-
+            sync_to_persistent(persistent_dir)
             logger.info(f"[{PLUGIN_NAME}] Skill 已同步到持久化目录: {persistent_dir}")
+            return True
         except Exception as e:
             logger.error(f"[{PLUGIN_NAME}] Skill 同步到持久化目录失败: {e}")
+            return False
 
-    def _install_skill(self):
-        """通过 SkillManager 安装 Skill（打包为 zip 后调用官方接口）"""
+    def _install_skill(self) -> bool:
+        """通过 SkillManager 安装自包含 Skill 包；返回是否安装成功。"""
         source_dir = self._get_skill_persistent_path()
 
         if not source_dir.exists():
             logger.error(f"[{PLUGIN_NAME}] Skill 持久化目录不存在: {source_dir}")
-            return
+            return False
 
         if source_dir.is_symlink():
             logger.error(
                 f"[{PLUGIN_NAME}] Skill 源目录是 symlink，拒绝安装: {source_dir}"
             )
-            return
+            return False
 
         skill_mgr = self._get_skill_manager()
         if not skill_mgr:
             logger.error(f"[{PLUGIN_NAME}] SkillManager 不可用，无法安装 Skill")
-            return
+            return False
 
-        tmp_zip = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-                tmp_zip = Path(tmp.name)
-
-            with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-                for file in source_dir.rglob("*"):
-                    if file.is_file():
-                        arcname = f"grok-search/{file.relative_to(source_dir)}"
-                        zf.write(file, arcname)
-
-            skill_mgr.install_skill_from_zip(str(tmp_zip), overwrite=True)
+            # 打包/备份/安装/用户配置恢复/失败回滚统一在共享安装器中完成
+            install_skill_package(skill_mgr, source_dir)
             logger.info(f"[{PLUGIN_NAME}] Skill 已通过 SkillManager 安装并激活")
+            return True
         except Exception as e:
-            logger.error(f"[{PLUGIN_NAME}] Skill 安装失败: {e}")
-        finally:
-            if tmp_zip:
-                tmp_zip.unlink(missing_ok=True)
+            logger.error(f"[{PLUGIN_NAME}] Skill 安装失败（已保留原安装）: {e}")
+            return False
 
     def _uninstall_skill(self):
         """通过 SkillManager 卸载 Skill"""
@@ -524,16 +461,11 @@ class GrokSearchPlugin(Star):
             logger.error(f"[{PLUGIN_NAME}] Skill 卸载失败: {e}")
 
     def _parse_json_config(self, key: str) -> dict:
-        """解析 JSON 格式的配置项"""
-        value = self._cfg(key, "")
-        if isinstance(value, dict):
-            return value
-        if isinstance(value, str):
-            result, error = parse_json_config(value)
-            if error:
-                logger.warning(f"[{PLUGIN_NAME}] {key} {error}")
-            return result
-        return {}
+        """解析 JSON 配置项；解析失败记录告警并按空配置处理。"""
+        value, error = parse_json_setting(self._cfg(key, ""))
+        if error:
+            logger.warning(f"[{PLUGIN_NAME}] {key} {error}")
+        return value
 
     async def _run_reverse_image_search(
         self, images: list[str], use_serpapi: bool, use_saucenao: bool
@@ -580,7 +512,7 @@ class GrokSearchPlugin(Star):
         start_date: str = "",
         end_date: str = "",
     ) -> dict:
-        """Execute a search.
+        """执行搜索：编排逻辑在 tool.search_service，这里接入插件配置并记录错误。
 
         Args:
             query: Search query content
@@ -595,132 +527,21 @@ class GrokSearchPlugin(Star):
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
         """
-        # 规范化搜索选项
-        opts = normalize_search_options(
-            search_depth=search_depth,
-            max_results=max_results,
-            topic=topic,
-            days=days,
-            time_range=time_range,
-            start_date=start_date,
-            end_date=end_date,
-        )
-
-        # 使用全局 timeout 配置
-        timeout = safe_number(
-            self._cfg("timeout_seconds", 60),
-            60.0,
-            cast=float,
-            min_val=0.001,
-        )
-
-        # 根据 search_depth 解析模式和对应的模型
-        mode = resolve_search_mode(str(opts["search_depth"]))
-        mode_model = resolve_mode_model(
-            self._cfg(f"{mode}_model", ""),
-            self._cfg("model", DEFAULT_MODEL),
-        )
-
-        # 推理参数
-        reasoning_effort, reasoning_budget_tokens = resolve_reasoning_params(
-            str(opts["search_depth"])
-        )
-
-        # 构建时间约束提示词
-        time_constraints = build_search_time_constraints(
-            topic=str(opts["topic"]),
-            days=int(opts["days"]),
-            time_range=str(opts["time_range"]),
-            start_date=str(opts["start_date"]),
-            end_date=str(opts["end_date"]),
-        )
-
-        # 重试配置（仅指令调用时使用）
-        max_retries = 0
-        retry_delay = 1.0
-        retryable_status_codes = None
-        if use_retry:
-            max_retries = self._cfg("max_retries", 3)
-            retry_delay = self._cfg("retry_delay", 1.0)
-
-            # 解析可重试状态码（直接从 list 类型配置获取）
-            retryable_codes = self._cfg("retryable_status_codes", [])
-            if retryable_codes and isinstance(retryable_codes, list):
-                retryable_status_codes = set(retryable_codes)
-
-        # 自定义系统提示词（传入优先，其次配置，最后默认 JSON 提示词）
-        if system_prompt is None:
-            system_prompt = resolve_system_prompt(
-                self._cfg("custom_system_prompt", ""),
-                DEFAULT_JSON_SYSTEM_PROMPT,
-            )
-
-        return await self._do_search_via_http(
-            query=query,
-            system_prompt=system_prompt,
-            images=images,
-            timeout=timeout,
-            reasoning_effort=reasoning_effort,
-            reasoning_budget_tokens=reasoning_budget_tokens,
-            max_retries=max_retries,
-            retry_delay=retry_delay,
-            retryable_status_codes=retryable_status_codes,
-            mode_model=mode_model,
-            search_depth=str(opts["search_depth"]),
-            max_results=int(opts["max_results"]),
-            time_constraints=time_constraints,
-        )
-
-    async def _do_search_via_http(
-        self,
-        *,
-        query: str,
-        system_prompt: str,
-        images: list[str] | None,
-        timeout: float,
-        reasoning_effort: str | None,
-        reasoning_budget_tokens: int | None,
-        max_retries: int,
-        retry_delay: float,
-        retryable_status_codes: set[int] | None,
-        mode_model: str,
-        search_depth: str = "basic",
-        max_results: int = 7,
-        time_constraints: str = "",
-    ) -> dict:
-        """通过外部 Grok HTTP API 执行搜索。"""
         try:
-            proxy = self._cfg("proxy", "").strip() or None
-
-            enriched_query = build_search_query(
-                query, search_depth, max_results, time_constraints
+            result = await execute_search(
+                self._cfg,
+                query,
+                system_prompt=system_prompt,
+                use_retry=use_retry,
+                images=images,
+                search_depth=search_depth,
+                max_results=max_results,
+                topic=topic,
+                days=days,
+                time_range=time_range,
+                start_date=start_date,
+                end_date=end_date,
             )
-
-            common_kwargs = {
-                "query": enriched_query,
-                "base_url": self._cfg("base_url", ""),
-                "api_key": self._cfg("api_key", ""),
-                "model": mode_model,
-                "timeout": timeout,
-                "extra_body": self._parse_json_config("extra_body"),
-                "extra_headers": self._parse_json_config("extra_headers"),
-                "system_prompt": system_prompt,
-                "max_retries": max_retries,
-                "retry_delay": retry_delay,
-                "retryable_status_codes": retryable_status_codes,
-                "images": images,
-                "proxy": proxy,
-            }
-
-            if self._cfg("use_responses_api", False):
-                result = await grok_responses_search(**common_kwargs)
-            else:
-                result = await grok_search(
-                    reasoning_effort=reasoning_effort,
-                    reasoning_budget_tokens=reasoning_budget_tokens,
-                    stream=self._cfg("enable_stream", False),
-                    **common_kwargs,
-                )
         except Exception as e:
             logger.error(f"[{PLUGIN_NAME}] API 调用异常: {e}")
             return {"ok": False, "error": f"API 调用异常: {e}"}
@@ -821,8 +642,7 @@ class GrokSearchPlugin(Star):
 
     def _help_text(self) -> str:
         """返回帮助文本"""
-        mode = "自定义"
-        provider_id = self._cfg("base_url", "") or "未配置"
+        endpoint = self._cfg("base_url", "") or "未配置"
         model = self._cfg("model", DEFAULT_MODEL) or "默认"
         serpapi_ready = bool((self._cfg("serpapi_api_key", "") or "").strip())
         saucenao_ready = bool((self._cfg("saucenao_api_key", "") or "").strip())
@@ -859,8 +679,7 @@ class GrokSearchPlugin(Star):
             "  - LLM Tool：模型自动调用 grok_web_search\n"
             "\n"
             f"当前配置:\n"
-            f"  供应商来源: {mode}\n"
-            f"  供应商: {provider_id}\n"
+            f"  API 端点: {endpoint}\n"
             f"  模型: {model}\n"
             f"  系统提示词: {prompt_info}\n"
             f"  反向搜图: Lens {'已配置' if serpapi_ready else '未配置'} / SauceNAO {'已配置' if saucenao_ready else '未配置'}"
@@ -995,14 +814,7 @@ class GrokSearchPlugin(Star):
             if use_image:
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                     tmp_path = tmp.name
-                render_search_card(
-                    content=result.get("content", ""),
-                    model=self._cfg("model", ""),
-                    elapsed_ms=result.get("elapsed_ms", 0),
-                    total_tokens=(result.get("usage") or {}).get("total_tokens", 0),
-                    output_path=tmp_path,
-                    theme=self._cfg("card_theme", "auto"),
-                )
+                await self._render_card_async(result, tmp_path)
                 nodes.append(
                     Node(
                         uin=sender_uin,
@@ -1043,33 +855,51 @@ class GrokSearchPlugin(Star):
             if tmp_path:
                 Path(tmp_path).unlink(missing_ok=True)
 
+    async def _render_card_async(self, result: dict, output_path: str) -> None:
+        """在线程池中执行 Pillow 渲染，避免阻塞事件循环；串行化控制内存峰值。
+
+        外层协程被取消时，先等渲染线程写完文件再传播取消，
+        避免调用方清理临时文件后线程又写回，或并发突破信号量限制。
+        """
+        async with _CARD_RENDER_SEMAPHORE:
+            render_task = asyncio.create_task(
+                asyncio.to_thread(
+                    render_search_card,
+                    content=result.get("content", ""),
+                    model=self._cfg("model", ""),
+                    elapsed_ms=result.get("elapsed_ms", 0),
+                    total_tokens=(result.get("usage") or {}).get("total_tokens", 0),
+                    output_path=output_path,
+                    theme=self._cfg("card_theme", "auto"),
+                )
+            )
+            try:
+                # shield：外层取消不得取消渲染任务本身，否则线程写回失去同步
+                await asyncio.shield(render_task)
+            except asyncio.CancelledError:
+                # 等待渲染线程真正结束；渲染自身失败或重复取消都不得替换取消语义
+                while not render_task.done():
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await asyncio.shield(render_task)
+                # 若渲染已完成但结果未被取回，取回以避免孤儿任务异常告警
+                if not render_task.cancelled():
+                    render_task.exception()
+                raise
+
     async def _send_as_image_card(self, event: AstrMessageEvent, result: dict) -> bool:
         """将搜索结果渲染为图片卡片并发送，附带文本来源链接。
 
         返回 True 表示图片已发送（来源链接以文本形式分开发送）；
         返回 False 表示渲染或发送失败，调用方应降级为文本模式。
         """
-        content = result.get("content", "")
         sources = result.get("sources", [])
-        elapsed = result.get("elapsed_ms", 0)
-        usage = result.get("usage") or {}
-        total_tokens = usage.get("total_tokens", 0)
-        model = self._cfg("model", "")
-        theme = self._cfg("card_theme", "auto")
 
         tmp_path: str | None = None
         image_sent = False
         try:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                 tmp_path = tmp.name
-            render_search_card(
-                content=content,
-                model=model,
-                elapsed_ms=elapsed,
-                total_tokens=total_tokens,
-                output_path=tmp_path,
-                theme=theme,
-            )
+            await self._render_card_async(result, tmp_path)
             await event.send(MessageChain().file_image(tmp_path))
             image_sent = True
         except Exception as e:
@@ -1220,10 +1050,14 @@ class GrokSearchPlugin(Star):
         timeout = self._cfg("timeout_seconds", 60)
         proxy = self._cfg("proxy", "") or None
 
-        extra_body_str = self._cfg("extra_body", "")
-        extra_headers_str = self._cfg("extra_headers", "")
-        extra_body, _ = parse_json_config(extra_body_str)
-        extra_headers, _ = parse_json_config(extra_headers_str)
+        extra_body, body_error = parse_json_setting(self._cfg("extra_body", ""))
+        extra_headers, headers_error = parse_json_setting(
+            self._cfg("extra_headers", "")
+        )
+        config_error = body_error or headers_error
+        if config_error:
+            # 面向模型的明确错误：配置问题不静默、不拼 raw
+            return f"错误：扩展参数配置无效（{config_error}），请检查插件设置"
 
         result = await grok_fetch(
             url=url,
@@ -1246,10 +1080,20 @@ class GrokSearchPlugin(Star):
             return f"网页抓取失败: {error}"
 
     async def terminate(self):
-        """插件销毁：等待后台字体任务完成。"""
-        if self._font_init_task and self._font_init_task.done():
-            try:
-                await self._font_init_task
-            except Exception:
-                pass
-        self._font_init_task = None
+        """插件销毁：取消本实例字体作业，并在工作线程中有界等待其退出。
+
+        等待通过 asyncio.to_thread 进行，事件循环在等待期间保持响应；
+        作业令牌只取消本实例的下载，不影响热重载后新实例的作业。
+        线程为 daemon，超时放弃等待也不会阻塞宿主卸载。
+        """
+        job = getattr(self, "_font_job", None)
+        thread = getattr(self, "_font_thread", None)
+        self._font_job = None
+        self._font_thread = None
+        if thread is None or not thread.is_alive():
+            return
+        if job is not None:
+            job.cancel()
+        await asyncio.to_thread(thread.join, _FONT_STOP_JOIN_SECONDS)
+        if thread.is_alive():
+            logger.warning(f"[{PLUGIN_NAME}] 字体线程未在时限内退出，放弃等待")

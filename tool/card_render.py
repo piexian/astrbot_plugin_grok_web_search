@@ -7,7 +7,6 @@ Grok 搜索结果卡片渲染器
 
 from __future__ import annotations
 
-import logging
 import os
 import re
 from io import BytesIO
@@ -15,17 +14,6 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 
 from . import font_loader
-
-# Module-level logger, can be overridden via set_logger()
-_module_logger = logging.getLogger(__name__)
-
-
-def set_logger(logger: logging.Logger) -> None:
-    """Set the logger used by card_render (call before init_fonts)."""
-    global _module_logger
-    _module_logger = logger
-    font_loader.set_logger(logger)
-
 
 # ─── 主题配色 ────────────────────────────────────────────────
 
@@ -82,9 +70,6 @@ def _get_theme(theme: str = "auto") -> dict[str, tuple]:
     return THEME_LIGHT if 7 <= hour < 18 else THEME_DARK
 
 
-# 模块级引用，render_search_card 调用时会根据 theme 参数重新指向
-THEME: dict[str, tuple] = THEME_DARK
-
 # ─── 字体管理 ───────────────────────────────────────────────
 
 # 运行时字体路径（由 init_fonts 设置）
@@ -94,14 +79,14 @@ _font_cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
 _fonts_ready = False
 
 
-def init_fonts(font_dir: str | None = None) -> bool:
+def init_fonts(font_dir: str | None = None, job=None) -> bool:
     """初始化字体。如果 font_dir 有字体就用，没有就自动下载（最新版本）。"""
     global _font_regular_path, _font_bold_path, _fonts_ready, _font_cache
 
     if font_dir is None:
         font_dir = os.path.join(os.path.dirname(__file__), "font")
 
-    paths = font_loader.init_fonts(font_dir)
+    paths = font_loader.init_fonts(font_dir, job=job)
     if not paths:
         return False
     _font_regular_path, _font_bold_path = paths
@@ -237,6 +222,7 @@ def _draw_rich_spans(
     font_bold: ImageFont.FreeTypeFont,
     color_normal: tuple,
     color_bold: tuple,
+    theme: dict[str, tuple],
 ) -> None:
     """绘制一行富文本片段，支持粗体和行内代码"""
     cx = x
@@ -249,10 +235,10 @@ def _draw_rich_spans(
             draw.rounded_rectangle(
                 [cx - 1, y - pad_y, cx + tw + pad_x * 2, y + code_font.size + pad_y],
                 radius=4,
-                fill=THEME["inline_code_bg"],
+                fill=theme["inline_code_bg"],
             )
             draw.text(
-                (cx + pad_x, y), text, font=code_font, fill=THEME["inline_code_text"]
+                (cx + pad_x, y), text, font=code_font, fill=theme["inline_code_text"]
             )
             cx += tw + pad_x * 2 + 3
         else:
@@ -284,10 +270,14 @@ class _Element:
 class _TextElem(_Element):
     def __init__(self, text: str):
         self.text = text
+        self._lines: list[list[_RichSpan]] | None = None
 
     def _wrapped(self, ctx: _Ctx) -> list[list[_RichSpan]]:
-        spans = _parse_rich(self.text)
-        return _wrap_rich(spans, ctx.f_content, ctx.f_bold, ctx.cw, ctx.draw)
+        # height 阶段计算一次并缓存，render 阶段直接复用
+        if self._lines is None:
+            spans = _parse_rich(self.text)
+            self._lines = _wrap_rich(spans, ctx.f_content, ctx.f_bold, ctx.cw, ctx.draw)
+        return self._lines
 
     def height(self, ctx: _Ctx) -> int:
         return len(self._wrapped(ctx)) * _line_height(ctx.f_content) + 2
@@ -302,8 +292,9 @@ class _TextElem(_Element):
                 y,
                 ctx.f_content,
                 ctx.f_bold,
-                THEME["text"],
-                THEME["bold"],
+                ctx.theme["text"],
+                ctx.theme["bold"],
+                ctx.theme,
             )
             y += lh
         return y + 2
@@ -313,17 +304,25 @@ class _BulletElem(_Element):
     def __init__(self, text: str, marker: str = "•"):
         self.text = text
         self.marker = marker
+        self._lines: list[list[_RichSpan]] | None = None
 
     def _wrapped(self, ctx: _Ctx) -> list[list[_RichSpan]]:
-        spans = _parse_rich(self.text)
-        return _wrap_rich(spans, ctx.f_content, ctx.f_bold, ctx.cw - 22, ctx.draw)
+        # height 阶段计算一次并缓存，render 阶段直接复用
+        if self._lines is None:
+            spans = _parse_rich(self.text)
+            self._lines = _wrap_rich(
+                spans, ctx.f_content, ctx.f_bold, ctx.cw - 22, ctx.draw
+            )
+        return self._lines
 
     def height(self, ctx: _Ctx) -> int:
         return len(self._wrapped(ctx)) * _line_height(ctx.f_content) + 2
 
     def render(self, ctx: _Ctx, x: int, y: int) -> int:
         lh = _line_height(ctx.f_content)
-        ctx.draw.text((x + 2, y), self.marker, font=ctx.f_content, fill=THEME["bullet"])
+        ctx.draw.text(
+            (x + 2, y), self.marker, font=ctx.f_content, fill=ctx.theme["bullet"]
+        )
         for line_spans in self._wrapped(ctx):
             _draw_rich_spans(
                 line_spans,
@@ -332,8 +331,9 @@ class _BulletElem(_Element):
                 y,
                 ctx.f_content,
                 ctx.f_bold,
-                THEME["text"],
-                THEME["bold"],
+                ctx.theme["text"],
+                ctx.theme["bold"],
+                ctx.theme,
             )
             y += lh
         return y + 2
@@ -342,22 +342,28 @@ class _BulletElem(_Element):
 class _QuoteElem(_Element):
     def __init__(self, lines: list[str]):
         self.text = "\n".join(lines)
+        self._lines: list[str] | None = None
+
+    def _wrapped(self, ctx: _Ctx) -> list[str]:
+        # height 阶段计算一次并缓存，render 阶段直接复用
+        if self._lines is None:
+            self._lines = _wrap_plain(self.text, ctx.f_content, ctx.cw - 18, ctx.draw)
+        return self._lines
 
     def height(self, ctx: _Ctx) -> int:
-        lines = _wrap_plain(self.text, ctx.f_content, ctx.cw - 18, ctx.draw)
-        return len(lines) * _line_height(ctx.f_content) + 12
+        return len(self._wrapped(ctx)) * _line_height(ctx.f_content) + 12
 
     def render(self, ctx: _Ctx, x: int, y: int) -> int:
         lh = _line_height(ctx.f_content)
-        lines = _wrap_plain(self.text, ctx.f_content, ctx.cw - 18, ctx.draw)
+        lines = self._wrapped(ctx)
         h = len(lines) * lh
         ctx.draw.line(
-            [(x + 4, y + 2), (x + 4, y + h + 6)], fill=THEME["quote_bar"], width=3
+            [(x + 4, y + 2), (x + 4, y + h + 6)], fill=ctx.theme["quote_bar"], width=3
         )
         ty = y + 4
         for line in lines:
             ctx.draw.text(
-                (x + 14, ty), line, font=ctx.f_content, fill=THEME["quote_text"]
+                (x + 14, ty), line, font=ctx.f_content, fill=ctx.theme["quote_text"]
             )
             ty += lh
         return y + h + 12
@@ -366,26 +372,33 @@ class _QuoteElem(_Element):
 class _CodeElem(_Element):
     def __init__(self, lines: list[str]):
         self.code = "\n".join(lines)
+        self._lines: list[str] | None = None
+
+    def _wrapped(self, ctx: _Ctx) -> list[str]:
+        # height 阶段计算一次并缓存，render 阶段直接复用
+        if self._lines is None:
+            wrapped: list[str] = []
+            for ln in self.code.split("\n"):
+                wrapped.extend(
+                    _wrap_plain(ln or " ", ctx.f_code, ctx.cw - 24, ctx.draw)
+                )
+            self._lines = wrapped
+        return self._lines
 
     def height(self, ctx: _Ctx) -> int:
-        code_lines = self.code.split("\n")
-        wrapped: list[str] = []
-        for ln in code_lines:
-            wrapped.extend(_wrap_plain(ln or " ", ctx.f_code, ctx.cw - 24, ctx.draw))
-        return len(wrapped) * (ctx.f_code.size + 5) + 20
+        return len(self._wrapped(ctx)) * (ctx.f_code.size + 5) + 20
 
     def render(self, ctx: _Ctx, x: int, y: int) -> int:
-        code_lines = self.code.split("\n")
-        wrapped: list[str] = []
-        for ln in code_lines:
-            wrapped.extend(_wrap_plain(ln or " ", ctx.f_code, ctx.cw - 24, ctx.draw))
+        wrapped = self._wrapped(ctx)
         ch = len(wrapped) * (ctx.f_code.size + 5)
         ctx.draw.rounded_rectangle(
-            [x, y + 2, x + ctx.cw, y + ch + 18], radius=6, fill=THEME["code_bg"]
+            [x, y + 2, x + ctx.cw, y + ch + 18], radius=6, fill=ctx.theme["code_bg"]
         )
         ty = y + 9
         for line in wrapped:
-            ctx.draw.text((x + 12, ty), line, font=ctx.f_code, fill=THEME["code_text"])
+            ctx.draw.text(
+                (x + 12, ty), line, font=ctx.f_code, fill=ctx.theme["code_text"]
+            )
             ty += ctx.f_code.size + 5
         return y + ch + 22
 
@@ -493,13 +506,19 @@ def _parse_to_sections(text: str) -> list[_Section]:
 
 
 class _Ctx:
-    def __init__(self, width: int = 800, margin: int = 30, panel_pad: int = 20):
+    def __init__(
+        self,
+        width: int = 800,
+        margin: int = 30,
+        panel_pad: int = 20,
+        theme: dict[str, tuple] | None = None,
+    ):
         self.width = width
         self.margin = margin
         self.panel_pad = panel_pad
         self.cw = width - margin * 2 - panel_pad * 2  # 内容宽度
+        self.theme = theme or THEME_DARK
 
-        self.f_header = _get_font(bold=True, size=24)
         self.f_section = _get_font(bold=True, size=20)
         self.f_content = _get_font(bold=False, size=18)
         self.f_bold = _get_font(bold=True, size=18)
@@ -511,7 +530,7 @@ class _Ctx:
         self.draw = ImageDraw.Draw(self._dummy)
 
     def create_canvas(self, height: int) -> None:
-        self.img = Image.new("RGB", (self.width, height), color=THEME["bg"])
+        self.img = Image.new("RGB", (self.width, height), color=self.theme["bg"])
         self.draw = ImageDraw.Draw(self.img)
 
 
@@ -558,13 +577,15 @@ def _render_sources_panel(sources: list[dict[str, str]], ctx: _Ctx, y: int) -> i
     ctx.draw.rounded_rectangle(
         [ctx.margin, y, ctx.width - ctx.margin, y + panel_h],
         radius=8,
-        fill=THEME["source_panel"],
-        outline=THEME["panel_border"],
+        fill=ctx.theme["source_panel"],
+        outline=ctx.theme["panel_border"],
         width=1,
     )
     tx = ctx.margin + ctx.panel_pad
     ty = y + ctx.panel_pad
-    ctx.draw.text((tx, ty), "REFERENCE SOURCES //", font=ctx.f_ui, fill=THEME["accent"])
+    ctx.draw.text(
+        (tx, ty), "REFERENCE SOURCES //", font=ctx.f_ui, fill=ctx.theme["accent"]
+    )
     ty += 22
 
     for i, src in enumerate(sources, 1):
@@ -572,16 +593,16 @@ def _render_sources_panel(sources: list[dict[str, str]], ctx: _Ctx, y: int) -> i
         url = src.get("url", "")
         display = title or url
         idx = f"{i}."
-        ctx.draw.text((tx, ty), idx, font=ctx.f_source, fill=THEME["source_idx"])
+        ctx.draw.text((tx, ty), idx, font=ctx.f_source, fill=ctx.theme["source_idx"])
         iw = _text_width(idx + " ", ctx.f_source, ctx.draw)
         for line in _wrap_plain(display, ctx.f_source, ctx.cw - iw - 8, ctx.draw):
-            color = THEME["text"] if title else THEME["link"]
+            color = ctx.theme["text"] if title else ctx.theme["link"]
             ctx.draw.text((tx + iw + 2, ty), line, font=ctx.f_source, fill=color)
             ty += ctx.f_source.size + 5
         if title and url:
             for line in _wrap_plain(url, ctx.f_source, ctx.cw - iw - 8, ctx.draw):
                 ctx.draw.text(
-                    (tx + iw + 2, ty), line, font=ctx.f_source, fill=THEME["link"]
+                    (tx + iw + 2, ty), line, font=ctx.f_source, fill=ctx.theme["link"]
                 )
                 ty += ctx.f_source.size + 4
         ty += 2
@@ -617,10 +638,8 @@ def render_search_card(
     Returns:
         文件路径 str 或 PNG bytes
     """
-    global THEME
-    THEME = _get_theme(theme)
     sources = sources or []
-    ctx = _Ctx(width=width)
+    ctx = _Ctx(width=width, theme=_get_theme(theme))
     sections = _parse_to_sections(content)
 
     # ── 预计算总高度 ──
@@ -646,17 +665,20 @@ def render_search_card(
         (ctx.margin, y),
         "[ GROK_DATA_STREAM :: SEARCH ]",
         font=ctx.f_ui,
-        fill=THEME["dim"],
+        fill=ctx.theme["dim"],
     )
     status = "SYS.STATUS: ONLINE"
     sw = _text_width(status, ctx.f_ui, ctx.draw)
     ctx.draw.text(
-        (ctx.width - ctx.margin - sw, y), status, font=ctx.f_ui, fill=THEME["accent"]
+        (ctx.width - ctx.margin - sw, y),
+        status,
+        font=ctx.f_ui,
+        fill=ctx.theme["accent"],
     )
     y += 22
     ctx.draw.line(
         [(ctx.margin, y), (ctx.width - ctx.margin, y)],
-        fill=THEME["panel_border"],
+        fill=ctx.theme["panel_border"],
         width=2,
     )
     y += header_h - 22
@@ -667,8 +689,8 @@ def render_search_card(
         ctx.draw.rounded_rectangle(
             [ctx.margin, y, ctx.width - ctx.margin, y + panel_h],
             radius=8,
-            fill=THEME["panel"],
-            outline=THEME["panel_border"],
+            fill=ctx.theme["panel"],
+            outline=ctx.theme["panel_border"],
             width=1,
         )
         tx = ctx.margin + ctx.panel_pad
@@ -676,9 +698,11 @@ def render_search_card(
 
         if sec.title:
             bar_h = ctx.f_section.size
-            ctx.draw.rectangle([tx, ty + 3, tx + 4, ty + bar_h], fill=THEME["accent"])
+            ctx.draw.rectangle(
+                [tx, ty + 3, tx + 4, ty + bar_h], fill=ctx.theme["accent"]
+            )
             ctx.draw.text(
-                (tx + 12, ty), sec.title, font=ctx.f_section, fill=THEME["text"]
+                (tx + 12, ty), sec.title, font=ctx.f_section, fill=ctx.theme["text"]
             )
             ty += _line_height(ctx.f_section) + 8
 
@@ -696,7 +720,7 @@ def render_search_card(
     y += 2
     if model:
         ctx.draw.text(
-            (ctx.margin, y), f"MODEL :: {model}", font=ctx.f_ui, fill=THEME["dim"]
+            (ctx.margin, y), f"MODEL :: {model}", font=ctx.f_ui, fill=ctx.theme["dim"]
         )
     meta_parts = []
     if elapsed_ms:
@@ -707,7 +731,7 @@ def render_search_card(
         mt = " · ".join(meta_parts)
         mw = _text_width(mt, ctx.f_ui, ctx.draw)
         ctx.draw.text(
-            (ctx.width - ctx.margin - mw, y), mt, font=ctx.f_ui, fill=THEME["dim"]
+            (ctx.width - ctx.margin - mw, y), mt, font=ctx.f_ui, fill=ctx.theme["dim"]
         )
 
     # ── 输出 ──

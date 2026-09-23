@@ -93,7 +93,8 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install pytest aiohttp pillow docstring-parser
+        # py7zr：字体解压链路的纯 Python 回退，CI 无系统 7z 时仍可完整验证
+        run: pip install pytest aiohttp pillow py7zr docstring-parser
 
       - name: Run tests
         run: python -m pytest -q

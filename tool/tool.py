@@ -309,8 +309,8 @@ def build_search_time_constraints(
             lines.append(f"- Start date: {computed_start}")
         elif computed_end:
             lines.append(f"- End date: {computed_end}")
-        elif time_range:
-            lines.append(f"- Time range: past {time_range}")
+        # start_date/time_range/days 分支已保证窗口非空时 start/end 至少一项存在，
+        # 此处不可能两者皆空，无需再回退到 time_range 文案。
         lines.append(f"- Current date: {today_str}")
         lines.append(
             "- Prefer evidence within this window; flag dates that cannot be verified. "
@@ -656,9 +656,10 @@ def make_error_result(
     started: float,
     retries: int = 0,
     raw: str = "",
+    kind: str = "",
 ) -> dict[str, Any]:
-    """构造标准化错误返回字典"""
-    return {
+    """构造标准化错误返回字典；kind 标记错误类别（http/api/empty/request）。"""
+    result = {
         "ok": False,
         "error": error,
         "content": "",
@@ -667,6 +668,38 @@ def make_error_result(
         "elapsed_ms": int((time.time() - started) * 1000),
         "retries": retries,
     }
+    if kind:
+        result["error_kind"] = kind
+    return result
+
+
+def merge_citations_into_sources(
+    sources: list[dict[str, Any]],
+    citations: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """把 API citations 按 URL 保序并入 sources；跳过空/重复/无效条目。
+
+    与 parse_sources_from_message 的去重语义一致，
+    作为插件与 Skill 共用的唯一 citations 合并出口。
+    """
+    if not citations:
+        return sources
+    seen = {str(src.get("url") or "") for src in sources}
+    for cit in citations:
+        if not isinstance(cit, dict):
+            continue
+        url = str(cit.get("url") or "").strip()
+        if not url or url in seen or not is_safe_url(url):
+            continue
+        seen.add(url)
+        sources.append(
+            {
+                "url": url,
+                "title": str(cit.get("title") or ""),
+                "snippet": str(cit.get("snippet") or ""),
+            }
+        )
+    return sources
 
 
 def validate_config(
@@ -697,20 +730,52 @@ def validate_config(
     return base_url, api_key
 
 
+# 宿主通用请求头（如 UA）：插件入口可选注入，共享核心不依赖 AstrBot
+_default_headers: dict[str, str] | None = None
+
+
+def set_default_headers(headers: dict | None) -> None:
+    """注入宿主通用请求头默认值（存副本）；空值清除。"""
+    global _default_headers
+    _default_headers = dict(headers) if headers else None
+
+
+def get_default_headers() -> dict[str, str] | None:
+    """返回宿主默认头副本；未注入时为 None。"""
+    return dict(_default_headers) if _default_headers else None
+
+
+def _merge_headers(target: dict[str, str], source: dict | None) -> None:
+    """按字段名大小写不敏感合并 source 到 target；不修改 source，键名沿用已有写法。"""
+    if not source:
+        return
+    for key, value in source.items():
+        name = str(key)
+        lowered = name.lower()
+        matching = [k for k in target if k.lower() == lowered]
+        if matching:
+            target[matching[0]] = str(value)
+        else:
+            target[name] = str(value)
+
+
+def _set_header(target: dict[str, str], name: str, value: str) -> None:
+    """写入固定请求头：移除大小写变体，统一使用给定键名。"""
+    for existing in [k for k in target if k.lower() == name.lower()]:
+        del target[existing]
+    target[name] = value
+
+
 def build_headers(
     api_key: str,
     extra_headers: dict | None = None,
 ) -> dict[str, str]:
-    """构建请求头，合并 extra_headers 并保护关键头"""
-    headers: dict[str, str] = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    if extra_headers:
-        protected = {"authorization", "content-type"}
-        for key, value in extra_headers.items():
-            if str(key).lower() not in protected:
-                headers[str(key)] = str(value)
+    """构建请求头；优先级：宿主默认头 < 用户 extra_headers < 固定鉴权/内容类型。"""
+    headers: dict[str, str] = {}
+    _merge_headers(headers, get_default_headers())
+    _merge_headers(headers, extra_headers)
+    _set_header(headers, "Content-Type", "application/json")
+    _set_header(headers, "Authorization", f"Bearer {api_key}")
     return headers
 
 
@@ -741,6 +806,7 @@ def format_http_error(
         error_msg,
         started,
         raw=error_text[:2000] if error_text else "",
+        kind="http",
     )
     result["status"] = status
     # 429 时解析 Retry-After 头
@@ -984,10 +1050,6 @@ async def retry_request(
 
     if result is None:
         return make_error_result(last_error or "未知错误", started, retry_count)
-
-    if not result.get("ok") or "data" not in result:
-        result["retries"] = retry_count
-        return result
 
     result["retries"] = retry_count
     return result

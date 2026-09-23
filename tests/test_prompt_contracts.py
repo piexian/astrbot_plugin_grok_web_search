@@ -39,6 +39,7 @@ def _main_methods(*names):
     namespace.update(
         PLUGIN_NAME="grok_test",
         logger=SimpleNamespace(info=lambda *a: None, warning=lambda *a: None),
+        execute_search=load("tool.search_service").execute_search,
     )
     exec(compile(ast.fix_missing_locations(module), "main_methods", "exec"), namespace)
     return namespace["Plugin"](), namespace
@@ -177,19 +178,26 @@ def test_llm_error_excludes_raw_diagnostics():
 
 @pytest.mark.parametrize("responses", [False, True])
 @pytest.mark.parametrize("custom", ["", "  ", "Custom prompt"])
-def test_plugin_http_prompt_and_guide_wiring(responses, custom):
-    plugin, namespace = _main_methods("_do_search", "_do_search_via_http")
+def test_plugin_http_prompt_and_guide_wiring(responses, custom, monkeypatch):
+    """插件 _do_search 委托共享编排；Chat/Responses 分流与提示词接线保持不变。"""
+    chat_mod = load("api.grok_chat")
+    resp_mod = load("api.grok_responses")
     config = {
         "use_responses_api": responses,
         "custom_system_prompt": custom,
         "base_url": "https://example.invalid",
         "api_key": "test-fixture",
     }
+    chat = AsyncMock(return_value={"ok": True})
+    resp = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(chat_mod, "grok_search", chat)
+    monkeypatch.setattr(resp_mod, "grok_responses_search", resp)
+    plugin, _ = _main_methods("_do_search")
     plugin._cfg = lambda key, default=None: config.get(key, default)
-    plugin._parse_json_config = lambda key: {}
-    chat = namespace["grok_search"] = AsyncMock(return_value={"ok": True})
-    resp = namespace["grok_responses_search"] = AsyncMock(return_value={"ok": True})
-    asyncio.run(plugin._do_search("Question", search_depth="deep", max_results=9))
+    result = asyncio.run(
+        plugin._do_search("Question", search_depth="deep", max_results=9)
+    )
+    assert result == {"ok": True}
     used, unused = (resp, chat) if responses else (chat, resp)
     unused.assert_not_called()
     kwargs = used.call_args.kwargs
@@ -197,6 +205,52 @@ def test_plugin_http_prompt_and_guide_wiring(responses, custom):
         custom, tool.DEFAULT_JSON_SYSTEM_PROMPT
     )
     assert kwargs["query"] == tool.build_search_query("Question", "deep", 9, "")
+    assert kwargs["max_retries"] == 0  # LLM Tool 路径不自动重试
+
+
+def test_execute_search_model_and_retry_params(monkeypatch):
+    """共享编排：显式模型优先；重试参数仅指令路径启用。"""
+    service = load("tool.search_service")
+    chat_mod = load("api.grok_chat")
+    chat = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(chat_mod, "grok_search", chat)
+
+    config = {
+        "model": "base-x",
+        "quick_model": "quick-x",
+        "max_retries": 5,
+        "retry_delay": 0.5,
+        "retryable_status_codes": [429, 500],
+    }
+
+    def get_cfg(key, default=None):
+        return config.get(key, default)
+
+    asyncio.run(
+        service.execute_search(
+            get_cfg, "Q", search_depth="basic", explicit_model="cli-x"
+        )
+    )
+    assert chat.call_args.kwargs["model"] == "cli-x"
+    assert chat.call_args.kwargs["max_retries"] == 0
+
+    asyncio.run(service.execute_search(get_cfg, "Q", search_depth="basic"))
+    assert chat.call_args.kwargs["model"] == "quick-x"  # 模式模型优先于全局
+
+    asyncio.run(
+        service.execute_search(get_cfg, "Q", search_depth="basic", use_retry=True)
+    )
+    assert chat.call_args.kwargs["max_retries"] == 5
+    assert chat.call_args.kwargs["retry_delay"] == 0.5
+    assert chat.call_args.kwargs["retryable_status_codes"] == {429, 500}
+    assert chat.call_args.kwargs["reasoning_effort"] is None
+
+    asyncio.run(service.execute_search(get_cfg, "Q", search_depth="deep"))
+    assert chat.call_args.kwargs["reasoning_effort"] == "high"
+    assert chat.call_args.kwargs["reasoning_budget_tokens"] == 32000
+    assert chat.call_args.kwargs["proxy"] is None  # 未配置代理时为 None
+    assert chat.call_args.kwargs["extra_body"] == {}
+    assert chat.call_args.kwargs["extra_headers"] == {}
 
 
 def test_tool_passes_quotes_images_and_candidate_evidence():

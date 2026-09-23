@@ -108,14 +108,16 @@
 |:---:|:---:|
 | ![深色主题](https://github.com/piexian/astrbot_plugin_grok_web_search/blob/master/image/dark.png) | ![浅色主题](https://github.com/piexian/astrbot_plugin_grok_web_search/blob/master/image/light.png) |
 
-**字体说明**：首次启用时自动从清华镜像下载 Sarasa Term Slab SC 字体。也可在 `data/plugin_data/astrbot_plugin_grok_web_search/font/` 目录放入自定义 `.ttf` 字体文件。
+**字体说明**：首次启用时自动按 NJU → 清华 TUNA → astrdark 加速 → GitHub 直连的顺序下载 Sarasa Term Slab SC 字体；每个下载源都会校验 7z 魔数、文件大小与 SHA256（优先使用官方发行元数据，失败回退内置已核验记录），坏包自动换源，失败时保留旧字体不影响文本输出。也可在 `data/plugin_data/astrbot_plugin_grok_web_search/font/` 目录放入自定义 `.ttf` 字体文件。
 
 ### 扩展参数
 
 | 配置项 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | `extra_body` | JSON | 否 | 额外请求体参数 |
-| `extra_headers` | JSON | 否 | 额外请求头 |
+| `extra_headers` | JSON | 否 | 额外请求头（覆盖宿主默认头；`Authorization`、`Content-Type` 始终由插件生成） |
+
+插件启动时可将宿主通用请求头（如 UA）用于 Grok 搜索、抓取与连通性检查；接口不可用时照常请求。覆盖顺序：宿主默认头 < `extra_headers` < 固定的 `Authorization` / `Content-Type`，字段名大小写不敏感。独立 Skill 不注入宿主头，可用 `extra_headers` 设置 UA。
 
 ## 使用
 
@@ -162,9 +164,8 @@
 ### 重试机制
 
 - `/grok` 指令启用自动重试，429 时优先使用服务端 `Retry-After` 头指定的等待时间，其他错误使用线性退避
-- LLM Tool 不自动重试，失败立即返回，由 AI 自行决定是否重新调用
-- 重试仅对自定义 HTTP 客户端通过 `retryable_status_codes` 匹配状态码
-- 使用 AstrBot 自带供应商时，采用异常重试机制（不受 `retryable_status_codes` 限制）
+- LLM Tool 与 Skill 不自动重试，失败立即返回，由 AI 自行决定是否重新调用
+- 重试通过 `retryable_status_codes` 匹配状态码，网络异常与超时同样计入重试
 
 ### LLM Tool
 
@@ -187,7 +188,7 @@
 
 ### Skill
 
-开启 `enable_skill` 后，会安装 Skill 到 `data/skills/grok-search/`，LLM 可读取 SKILL.md 后执行脚本。
+开启 `enable_skill` 后，会把 SKILL.md、执行脚本与共享核心代码包（`tool/`、`api/`）一并安装到 `data/skills/grok-search/`，LLM 可读取 SKILL.md 后执行脚本。脚本与插件指令共用同一套请求编排和配置语义（代理、模型优先级、提示词、扩展参数），安装失败时保留插件原有 LLM Tool，不影响搜索。
 
 脚本使用 `--image-files` 接收本地图片，不自动提取消息附件。供 LLM 调用时使用 `--output llm`，仅返回正文、来源、候选证据和错误类别；默认 `--output json` 保留旧诊断字段供人工排查。
 
@@ -218,21 +219,28 @@ Python 3.12 的主要新特性包括:
 
 ```
 astrbot_plugin_grok_web_search/
-├── main.py              # 插件主入口
+├── main.py              # 插件主入口（宿主注册、消息提取与展示）
 ├── api/                 # API 客户端
 │   ├── grok_chat.py     # Chat Completions API 客户端
-│   └── grok_responses.py# Responses API 客户端（xAI 官方）
-├── tool/                # 工具模块
+│   ├── grok_responses.py# Responses API 客户端（xAI 官方）
+│   ├── saucenao.py      # SauceNAO 反向搜图适配
+│   └── serpapi_lens.py  # SerpAPI Google Lens 适配
+├── tool/                # 工具模块（Skill 安装包的一部分）
 │   ├── tool.py          # 共享工具（常量、工具函数、重试逻辑）
-│   └── card_render.py   # 搜索结果图片卡片渲染器
+│   ├── config.py        # 配置映射/默认值与 JSON 设置解析（唯一出口）
+│   ├── search_service.py# 搜索编排：选项规范化、模型/提示词解析与分发
+│   ├── skill_package.py # Skill 自包含安装包清单与打包/同步
+│   ├── image_search.py  # 反向搜图共享逻辑
+│   ├── card_render.py   # 搜索结果图片卡片渲染器（不进 Skill 包）
+│   └── font_loader.py   # 字体多源下载与校验（不进 Skill 包）
 ├── image/               # 示例图片
 ├── metadata.yaml        # 插件元数据
 ├── _conf_schema.json    # 配置项 Schema
 ├── README.md
-└── skill/               # Skill 脚本（运行时同步到 plugin_data，保留本地配置）
+└── skill/               # Skill 源（运行时同步到 plugin_data，保留用户配置）
     ├── SKILL.md         # Skill 说明文档
     └── scripts/
-        └── grok_search.py  # 独立搜索脚本（仅标准库）
+        └── grok_search.py  # Skill CLI（复用插件共享核心 tool/ 与 api/）
 ```
 
 ## 致谢
