@@ -79,6 +79,8 @@ await service.search(
 （失败时 `ok=False` + `error`）。固定 `use_retry=False`，SDK 调用不自动重试；
 Chat / Responses 协议选择沿用 `use_responses_api` 配置。
 
+`system_prompt` 仅接受 `None` 或字符串（含空字符串）；其他类型在调用后端前抛 `PluginServiceError(code="invalid_request")`。
+
 ```python
 await service.fetch(url)  # -> API 原有字典：ok / content / model / usage / elapsed_ms
 ```

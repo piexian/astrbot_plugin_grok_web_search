@@ -197,6 +197,10 @@ class GrokSearchService:
             raise PluginServiceError(
                 "invalid_request", "images 必须是 base64 字符串列表"
             )
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            raise PluginServiceError(
+                "invalid_request", "system_prompt 必须是字符串或 None"
+            )
         return await self._plugin._do_search(
             query,
             system_prompt=system_prompt,
