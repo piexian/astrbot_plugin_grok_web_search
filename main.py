@@ -26,9 +26,9 @@ from astrbot.core.utils.quoted_message.chain_parser import (
     _extract_text_from_component_chain,
 )
 
-from .api.grok_chat import grok_fetch
 from .api.saucenao import saucenao_search
 from .api.serpapi_lens import serpapi_lens_search
+from .public_api import GrokSearchService
 
 try:
     from astrbot.core.provider.register import llm_tools as _llm_tools_registry
@@ -59,6 +59,7 @@ from .tool.config import (
     migrate_legacy_config,
     parse_json_setting,
 )
+from .tool.fetch_service import execute_fetch
 from .tool.image_search import (
     DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
     DEFAULT_IMAGE_SEARCH_TIMEOUT,
@@ -129,6 +130,16 @@ class GrokSearchPlugin(Star):
         self._font_job = None
         set_default_headers(_load_host_default_headers())
         self._migrate_legacy_config()
+        # SDK v1 公开服务：每次加载生成唯一 instance_id，重载后旧实例失效
+        self._service = GrokSearchService(self)
+
+    def get_service(self, api_version: int = 1) -> GrokSearchService:
+        """SDK v1 公开服务入口；同次加载返回同一实例，重载后旧实例失效。"""
+        service = getattr(self, "_service", None)
+        if service is None:
+            service = GrokSearchService(self)
+            self._service = service
+        return service.for_api_version(api_version)
 
     def _cfg(self, key: str, default=None):
         return config_value(self.config, key, default)
@@ -303,6 +314,11 @@ class GrokSearchPlugin(Star):
                 self._uninstall_skill()
             self._unregister_fetch_tool_if_disabled()
 
+        # SDK 门面在 initialize 完成后开放；不依赖字体下载与 Skill 安装结果
+        service = getattr(self, "_service", None)
+        if service is not None:
+            service.mark_initialized()
+
     async def _validate_config(self):
         """验证必要配置，并通过 v1/models 接口检查连通性"""
         base_url = normalize_base_url(self._cfg("base_url", ""))
@@ -466,6 +482,10 @@ class GrokSearchPlugin(Star):
         if error:
             logger.warning(f"[{PLUGIN_NAME}] {key} {error}")
         return value
+
+    async def _do_fetch(self, url: str) -> dict:
+        """共享网页抓取入口：LLM Tool 与 SDK 门面共用，返回完整结构化结果。"""
+        return await execute_fetch(self._cfg, url)
 
     async def _run_reverse_image_search(
         self, images: list[str], use_serpapi: bool, use_saucenao: bool
@@ -1041,59 +1061,41 @@ class GrokSearchPlugin(Star):
         Args:
             url(string): Complete HTTP/HTTPS URL of the page to read, not an image URL or search query.
         """
-        if not url or not url.startswith("http"):
-            return "错误：请提供完整的 HTTP/HTTPS URL"
-
-        base_url = self._cfg("base_url", "")
-        api_key = self._cfg("api_key", "")
-        model = self._cfg("model", DEFAULT_MODEL)
-        timeout = self._cfg("timeout_seconds", 60)
-        proxy = self._cfg("proxy", "") or None
-
-        extra_body, body_error = parse_json_setting(self._cfg("extra_body", ""))
-        extra_headers, headers_error = parse_json_setting(
-            self._cfg("extra_headers", "")
-        )
-        config_error = body_error or headers_error
-        if config_error:
-            # 面向模型的明确错误：配置问题不静默、不拼 raw
-            return f"错误：扩展参数配置无效（{config_error}），请检查插件设置"
-
-        result = await grok_fetch(
-            url=url,
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            timeout=float(timeout) if timeout else 60.0,
-            extra_body=extra_body or None,
-            extra_headers=extra_headers or None,
-            proxy=proxy,
-        )
+        result = await self._do_fetch(url)
 
         if result.get("ok"):
             content = result.get("content", "")
             if content:
                 return content
             return "抓取成功但页面内容为空"
-        else:
-            error = result.get("error", "未知错误")
-            return f"网页抓取失败: {error}"
+        error = result.get("error", "未知错误")
+        if result.get("error_kind") in ("invalid_url", "invalid_config"):
+            return f"错误：{error}"
+        return f"网页抓取失败: {error}"
 
     async def terminate(self):
-        """插件销毁：取消本实例字体作业，并在工作线程中有界等待其退出。
+        """插件销毁：停用 SDK 门面，并取消本实例字体作业后有限等待其退出。
 
         等待通过 asyncio.to_thread 进行，事件循环在等待期间保持响应；
         作业令牌只取消本实例的下载，不影响热重载后新实例的作业。
         线程为 daemon，超时放弃等待也不会阻塞宿主卸载。
         """
-        job = getattr(self, "_font_job", None)
-        thread = getattr(self, "_font_thread", None)
-        self._font_job = None
-        self._font_thread = None
-        if thread is None or not thread.is_alive():
-            return
-        if job is not None:
-            job.cancel()
-        await asyncio.to_thread(thread.join, _FONT_STOP_JOIN_SECONDS)
-        if thread.is_alive():
-            logger.warning(f"[{PLUGIN_NAME}] 字体线程未在时限内退出，放弃等待")
+        service = getattr(self, "_service", None)
+        if service is not None:
+            # SDK 门面随实例停用：先拒绝新业务，结束后永久关闭
+            service.begin_shutdown()
+        try:
+            job = getattr(self, "_font_job", None)
+            thread = getattr(self, "_font_thread", None)
+            self._font_job = None
+            self._font_thread = None
+            if thread is None or not thread.is_alive():
+                return
+            if job is not None:
+                job.cancel()
+            await asyncio.to_thread(thread.join, _FONT_STOP_JOIN_SECONDS)
+            if thread.is_alive():
+                logger.warning(f"[{PLUGIN_NAME}] 字体线程未在时限内退出，放弃等待")
+        finally:
+            if service is not None:
+                service.close()

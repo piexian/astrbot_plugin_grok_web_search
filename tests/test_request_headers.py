@@ -18,6 +18,7 @@ from conftest import ROOT, load
 tool = load("tool.tool")
 chat_mod = load("api.grok_chat")
 resp_mod = load("api.grok_responses")
+public_api = load("public_api")
 
 HOST_UA = "astrbot/9.9.9-fixture"
 
@@ -457,6 +458,7 @@ def test_plugin_init_injects_host_headers():
         "_StarShim": _StarShim,
         "_load_host_default_headers": lambda: {"User-Agent": HOST_UA},
         "set_default_headers": tool.set_default_headers,
+        "GrokSearchService": public_api.GrokSearchService,
     }
     exec(compile(module, "main.py:__init__", "exec"), namespace)
     plugin_cls = namespace["Plugin"]

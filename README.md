@@ -215,11 +215,46 @@ Python 3.12 的主要新特性包括:
 (耗时: 2345ms)
 ```
 
+## 插件服务接口（SDK v1）
+
+其他插件可在同一 AstrBot 进程内通过原生发现复用本插件的搜索、抓取与反向搜图能力，无需经过 LLM Tool 或消息文本。完整契约见 [docs/plugin-api.md](docs/plugin-api.md)。
+
+```python
+def get_grok_service(context):
+    meta = context.get_registered_star("astrbot_plugin_grok_web_search")
+    if meta is None:
+        raise RuntimeError("注册表中未发现 Grok 插件，请检查安装与加载状态")
+    if not meta.activated:
+        raise RuntimeError("Grok 插件已禁用")
+    if meta.star_cls is None:
+        raise RuntimeError("Grok 插件尚无可调用实例")
+    getter = getattr(meta.star_cls, "get_service", None)
+    if not callable(getter):
+        raise RuntimeError("Grok 插件版本不支持 SDK，请升级")
+    return getter(api_version=1)
+
+
+service = get_grok_service(context)
+status = service.get_status()
+await service.wait_ready(timeout=5)  # 超时抛 TimeoutError
+
+result = await service.search("AstrBot 插件开发")
+page = await service.fetch("https://example.org/docs")
+agg = await service.reverse_image_search([b64_image], use_serpapi=True)
+```
+
+说明：
+
+- `state` 为 `initializing/ready/unavailable/closing/closed`；`ready` 仅表示本地配置满足任一能力，不保证上游可用。插件重载后旧 `service` 永久失效（`code=service_closed`）。
+- 业务方法分别校验自身配置：`fetch` 遵守 `enable_fetch`（关闭时 `code=feature_disabled`），反向搜图不替调用方启用未配置的收费后端；`search` 固定不自动重试。
+- 服务不暴露原始配置、API Key、extra_headers 或内部对象。
+
 ## 项目结构
 
 ```
 astrbot_plugin_grok_web_search/
 ├── main.py              # 插件主入口（宿主注册、消息提取与展示）
+├── public_api.py        # SDK v1 公开服务门面（状态/能力/搜索/抓取/反向搜图）
 ├── api/                 # API 客户端
 │   ├── grok_chat.py     # Chat Completions API 客户端
 │   ├── grok_responses.py# Responses API 客户端（xAI 官方）
@@ -229,6 +264,7 @@ astrbot_plugin_grok_web_search/
 │   ├── tool.py          # 共享工具（常量、工具函数、重试逻辑）
 │   ├── config.py        # 配置映射/默认值与 JSON 设置解析（唯一出口）
 │   ├── search_service.py# 搜索编排：选项规范化、模型/提示词解析与分发
+│   ├── fetch_service.py # 网页抓取编排：本地校验与 API 分发（Tool/SDK 共用）
 │   ├── skill_package.py # Skill 自包含安装包清单与打包/同步
 │   ├── image_search.py  # 反向搜图共享逻辑
 │   ├── card_render.py   # 搜索结果图片卡片渲染器（不进 Skill 包）
