@@ -233,13 +233,14 @@ def get_grok_service(context):
         raise RuntimeError("Grok 插件版本不支持 SDK，请升级")
     return getter(api_version=1)
 
-service = get_grok_service(context)
-status = service.get_status()  # 本地快照：state/ready/search_ready/fetch_ready/image_search_ready
-await service.wait_ready(timeout=5)  # 就绪后返回同形快照；超时抛 TimeoutError
 
-result = await service.search("AstrBot 插件开发")      # ok/content/sources/usage/... 完整字典
-page = await service.fetch("https://example.org/docs")  # ok/content/model/usage/... 完整字典
-agg = await service.reverse_image_search([b64_image], use_serpapi=True)  # 含 evidence_text 聚合字典
+service = get_grok_service(context)
+status = service.get_status()
+await service.wait_ready(timeout=5)  # 超时抛 TimeoutError
+
+result = await service.search("AstrBot 插件开发")
+page = await service.fetch("https://example.org/docs")
+agg = await service.reverse_image_search([b64_image], use_serpapi=True)
 ```
 
 说明：
