@@ -123,3 +123,17 @@ def test_sdk_fetch_accepts_complete_http_urls(monkeypatch, url):
     assert asyncio.run(_service().fetch(url))["ok"] is True
     assert api.await_args.kwargs["url"] == url
     assert api.await_count == 1
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "missing", [{"api_key": ""}, {"base_url": ""}, {"api_key": "", "base_url": ""}]
+)
+def test_fetch_disable_gate_precedes_missing_credentials(monkeypatch, enabled, missing):
+    api = AsyncMock()
+    monkeypatch.setattr(fetch_service, "_load_api", lambda: api)
+    service = _service(enable_fetch=enabled, **missing)
+    with pytest.raises(public_api.PluginServiceError) as error:
+        asyncio.run(service.fetch("https://example.org"))
+    assert error.value.code == ("not_ready" if enabled else "feature_disabled")
+    api.assert_not_awaited()

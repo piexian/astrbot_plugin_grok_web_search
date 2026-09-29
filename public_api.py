@@ -214,13 +214,13 @@ class GrokSearchService:
     async def fetch(self, url: str) -> dict[str, Any]:
         """抓取网页；返回 API 原有结构化字典，遵守 enable_fetch 开关。"""
         status = self._admit_open()
+        if not bool(self._plugin._cfg("enable_fetch", False)):
+            raise PluginServiceError(
+                "feature_disabled", "网页抓取未启用（enable_fetch）"
+            )
         if not status["search_ready"]:
             raise PluginServiceError(
                 "not_ready", "缺少 base_url/api_key 配置，抓取不可用"
-            )
-        if not status["fetch_ready"]:
-            raise PluginServiceError(
-                "feature_disabled", "网页抓取未启用（enable_fetch）"
             )
         if not isinstance(url, str) or not url.strip():
             raise PluginServiceError("invalid_request", "url 必须是非空字符串")
