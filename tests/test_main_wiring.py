@@ -13,6 +13,8 @@ MODULES = {
     "tool.tool": load("tool.tool"),
     "tool.image_search": load("tool.image_search"),
     "tool.card_render": load("tool.card_render"),
+    "tool.fetch_service": load("tool.fetch_service"),
+    "public_api": load("public_api"),
     "api.grok_chat": load("api.grok_chat"),
     "api.grok_responses": load("api.grok_responses"),
     "api.saucenao": load("api.saucenao"),
