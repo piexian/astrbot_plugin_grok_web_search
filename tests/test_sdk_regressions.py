@@ -3,18 +3,29 @@
 import ast
 import asyncio
 import re
+from functools import partial
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from conftest import ROOT, load
 
 public_api = load("public_api")
+fetch_service = load("tool.fetch_service")
 
 
 def _service(**overrides):
-    config = {"base_url": "https://grok.example", "api_key": "fixture-key"}
+    config = {
+        "base_url": "https://grok.example",
+        "api_key": "fixture-key",
+        "enable_fetch": True,
+    }
     config.update(overrides)
-    service = public_api.GrokSearchService(SimpleNamespace(_cfg=config.get))
+    service = public_api.GrokSearchService(
+        SimpleNamespace(
+            _cfg=config.get, _do_fetch=partial(fetch_service.execute_fetch, config.get)
+        )
+    )
     service.mark_initialized()
     return service
 
@@ -53,3 +64,62 @@ def test_sdk_documentation_python_examples_compile(document):
     assert blocks
     for block in blocks:
         compile(block, document, "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http-not-a-url",
+        "httpx://host",
+        "http nonsense",
+        "https://",
+        "https:///path",
+        "https://[broken",
+        "https://exa mple.org",
+        "https://host:notport",
+        "https://host:70000",
+    ],
+)
+def test_sdk_fetch_rejects_malformed_http_urls_without_requests(monkeypatch, url):
+    api = AsyncMock(return_value={"ok": True, "content": "fixture"})
+    monkeypatch.setattr(fetch_service, "_load_api", lambda: api)
+    result = asyncio.run(_service().fetch(url))
+    assert result["ok"] is False and result["error_kind"] == "invalid_url"
+    api.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "timeout,expected",
+    [
+        ("not-a-number", 60.0),
+        ([], 60.0),
+        ({}, 60.0),
+        (None, 60.0),
+        (0, 60.0),
+        (-1, 60.0),
+        ("12.5", 12.5),
+    ],
+)
+def test_sdk_fetch_normalizes_timeout_like_search(monkeypatch, timeout, expected):
+    api = AsyncMock(return_value={"ok": True, "content": "fixture"})
+    monkeypatch.setattr(fetch_service, "_load_api", lambda: api)
+    result = asyncio.run(_service(timeout_seconds=timeout).fetch("https://example.org"))
+    assert result["ok"] is True
+    assert api.await_args.kwargs["timeout"] == expected
+    assert api.await_count == 1
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.org/docs",
+        "http://localhost:8080/p?q=1",
+        "HTTPS://Example.org/a",
+    ],
+)
+def test_sdk_fetch_accepts_complete_http_urls(monkeypatch, url):
+    api = AsyncMock(return_value={"ok": True, "content": "fixture"})
+    monkeypatch.setattr(fetch_service, "_load_api", lambda: api)
+    assert asyncio.run(_service().fetch(url))["ok"] is True
+    assert api.await_args.kwargs["url"] == url
+    assert api.await_count == 1

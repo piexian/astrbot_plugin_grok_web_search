@@ -87,6 +87,7 @@ await service.fetch(url)  # -> API 原有字典：ok / content / model / usage /
 URL 不合法或扩展参数 JSON 无效时返回结构化失败字典（`error_kind="invalid_url" /
 "invalid_config"`），不抛出、不静默返回空成功。LLM Tool `grok_web_fetch` 展示的
 字符串与 SDK 字典来自同一共享入口（`tool/fetch_service.py`）。
+仅接受完整 HTTP/HTTPS URL；无效端口在本地拒绝。超时配置与搜索一致：无法转换为数值或低于 0.001 秒时回退到 60 秒。
 
 ```python
 await service.reverse_image_search(

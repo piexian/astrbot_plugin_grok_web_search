@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 from .config import parse_json_setting
-from .tool import DEFAULT_MODEL
+from .tool import DEFAULT_MODEL, safe_number
 
 # 配置读取器签名：(key, default) -> 值
 ConfigGetter = Callable[..., Any]
@@ -34,7 +35,17 @@ async def execute_fetch(get_cfg: ConfigGetter, url: str) -> dict[str, Any]:
     - ok=False + API 错误字段（失败，沿用作适配器的错误结构）
     """
     url = str(url or "")
-    if not url or not url.startswith("http"):
+    try:
+        parsed = urlsplit(url)
+        _ = parsed.port  # 拒绝非数字或越界端口。
+        valid_url = (
+            parsed.scheme in ("http", "https")
+            and bool(parsed.hostname)
+            and not any(char.isspace() or ord(char) < 32 for char in url)
+        )
+    except ValueError:
+        valid_url = False
+    if not valid_url:
         return {
             "ok": False,
             "error_kind": "invalid_url",
@@ -52,14 +63,16 @@ async def execute_fetch(get_cfg: ConfigGetter, url: str) -> dict[str, Any]:
             "error": f"扩展参数配置无效（{config_error}），请检查插件设置",
         }
 
-    timeout = get_cfg("timeout_seconds", 60)
+    timeout = safe_number(
+        get_cfg("timeout_seconds", 60), 60.0, cast=float, min_val=0.001
+    )
     grok_fetch = _load_api()
     return await grok_fetch(
         url=url,
         base_url=get_cfg("base_url", ""),
         api_key=get_cfg("api_key", ""),
         model=get_cfg("model", DEFAULT_MODEL),
-        timeout=float(timeout) if timeout else 60.0,
+        timeout=timeout,
         extra_body=extra_body or None,
         extra_headers=extra_headers or None,
         proxy=str(get_cfg("proxy", "") or "") or None,
