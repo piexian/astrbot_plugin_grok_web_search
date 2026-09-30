@@ -2,6 +2,28 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.6.3] - 2026-09-30
+
+### Added
+
+- **插件服务接口 SDK v1**：新增 `public_api.py` 门面，其他插件可在同进程通过原生发现 `get_service(api_version=1)` 复用搜索、网页抓取与反向搜图，业务路径与指令 / LLM Tool / Skill 完全一致，不叠加额外网络、重试或费用策略
+- 服务契约：`get_status` / `capabilities` / `wait_ready` 为本地无网络副作用的快照，含 `instance_id`、`search_ready` / `fetch_ready` / `image_search_ready` 与 `config_errors`；只接受真正的 `int` 1 版本号，其他值抛 `code=unsupported_version`
+- 服务生命周期：插件重载后旧实例永久失效（`code=service_closed`），`terminate` 先停用再关闭；门面不透传原始配置、API Key、`extra_headers` 或内部对象
+- SDK 使用文档 `docs/plugin-api.md` 与 README 调用示例
+
+### Changed
+
+- 网页抓取编排抽到 `tool/fetch_service.py`，LLM Tool 与 SDK 门面共用同一入口（本地 URL 校验、扩展参数配置校验、超时归一化、API 分发），两个入口的拦截语义一致；Tool 继续返回面向模型的字符串，SDK 返回完整结构化字典
+- 反向搜图凭证不再经 `str()` 强转，统一由 `tool/image_search.normalize_image_search_key` 判定，指令、LLM Tool、Skill 与 SDK 判定一致
+
+### Fixed
+
+- 抓取 URL 校验收紧：拒绝非 http/https、缺主机名、含空白或控制字符、非数字及越界端口（此前仅前缀判断即放行）
+- 抓取超时归一化：非法或过小的 `timeout_seconds` 回落默认值，不再把异常值直接透传给 API
+- SDK `fetch` 在 `enable_fetch` 关闭时优先返回 `code=feature_disabled`，不再被"缺少 base_url/api_key"掩盖
+- SDK `search` 在派发前校验 `query`、`images` 与 `system_prompt`，非法参数返回 `code=invalid_request` 而非进入下游
+- 空白或非字符串的 SerpAPI / SauceNAO Key 不再被判为已配置（此前纯空格 Key 会让后端照常发起付费请求），帮助文本与就绪状态同步修正
+
 ## [1.6.2] - 2026-09-23
 
 ### Changed
