@@ -1015,3 +1015,41 @@ def test_unexpected_network_blocked_by_guard(skill, monkeypatch, capsys):
     _configure(skill, monkeypatch)
     rc, out, _ = _run(skill, monkeypatch, capsys, "--query", "Q", "--output", "llm")
     assert rc == 1 and out["error"] == "request_failed"
+
+
+@pytest.mark.parametrize("backend", ["serpapi", "saucenao"])
+@pytest.mark.parametrize("key", [123, {"bad": "key"}, " \t\n"])
+def test_reverse_image_credentials_share_validation_with_plugin(
+    monkeypatch, backend, key
+):
+    """Skill 保留有效后端，非法凭证在共享编排中本地跳过。"""
+    import argparse
+    import base64
+    from io import BytesIO
+
+    from PIL import Image
+
+    spec = importlib.util.spec_from_file_location(
+        "skill_image_credentials_test", ROOT / "skill" / "scripts" / "grok_search.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    calls = []
+
+    async def fake_fn(image, *, api_key, timeout, proxy=None):
+        calls.append(api_key)
+        return {"ok": True, "payload": {}, "error": ""}
+
+    monkeypatch.setattr(mod, "_load_image_search_adapters", lambda: (fake_fn, fake_fn))
+    buf = BytesIO()
+    Image.new("RGB", (2, 2)).save(buf, format="PNG")
+    image = base64.b64encode(buf.getvalue()).decode()
+    keys = {"serpapi_api_key": "  valid-key\n", "saucenao_api_key": "  valid-key\n"}
+    keys[f"{backend}_api_key"] = key
+    args = argparse.Namespace(serpapi=True, saucenao=True, all=False)
+    agg = mod._run_reverse_image_search_sync(
+        args, {"reverse_image_search": keys}, [image]
+    )
+    assert calls == ["valid-key"]
+    assert agg[backend]["ok"] is False
+    assert agg["notes"]

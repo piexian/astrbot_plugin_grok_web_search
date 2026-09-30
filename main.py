@@ -63,6 +63,7 @@ from .tool.fetch_service import execute_fetch
 from .tool.image_search import (
     DEFAULT_IMAGE_SEARCH_MAX_IMAGES,
     DEFAULT_IMAGE_SEARCH_TIMEOUT,
+    normalize_image_search_key,
     parse_cmd_args,
     run_reverse_image_search,
 )
@@ -509,8 +510,8 @@ class GrokSearchPlugin(Star):
             images or [],
             use_serpapi=use_serpapi,
             use_saucenao=use_saucenao,
-            serpapi_key=str(self._cfg("serpapi_api_key", "") or ""),
-            saucenao_key=str(self._cfg("saucenao_api_key", "") or ""),
+            serpapi_key=self._cfg("serpapi_api_key", ""),
+            saucenao_key=self._cfg("saucenao_api_key", ""),
             timeout=float(timeout),
             proxy=str(self._cfg("proxy", "") or ""),
             max_images=max_images,
@@ -664,8 +665,12 @@ class GrokSearchPlugin(Star):
         """返回帮助文本"""
         endpoint = self._cfg("base_url", "") or "未配置"
         model = self._cfg("model", DEFAULT_MODEL) or "默认"
-        serpapi_ready = bool((self._cfg("serpapi_api_key", "") or "").strip())
-        saucenao_ready = bool((self._cfg("saucenao_api_key", "") or "").strip())
+        serpapi_ready = bool(
+            normalize_image_search_key(self._cfg("serpapi_api_key", ""))
+        )
+        saucenao_ready = bool(
+            normalize_image_search_key(self._cfg("saucenao_api_key", ""))
+        )
         has_custom_prompt = bool((self._cfg("custom_system_prompt", "") or "").strip())
         if has_custom_prompt:
             prompt_info = "自定义"

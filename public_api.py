@@ -12,6 +12,7 @@ import uuid
 from typing import Any
 
 from .tool.config import parse_json_setting
+from .tool.image_search import normalize_image_search_key
 from .tool.tool import normalize_api_key, normalize_base_url
 
 # SDK v1 固定能力标识：声明实现支持的能力，不代表账号权限或当前可执行。
@@ -136,9 +137,9 @@ class GrokSearchService:
 
     def _image_search_ready(self) -> bool:
         cfg = self._plugin._cfg
-        return bool(
-            str(cfg("serpapi_api_key", "") or "").strip()
-            or str(cfg("saucenao_api_key", "") or "").strip()
+        return any(
+            normalize_image_search_key(cfg(key, ""))
+            for key in ("serpapi_api_key", "saucenao_api_key")
         )
 
     def _config_errors(self) -> list[str]:

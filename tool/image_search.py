@@ -32,6 +32,11 @@ _BACKEND_LABELS = {"serpapi": "SerpAPI", "saucenao": "SauceNAO"}
 BackendFn = Callable[..., Coroutine[Any, Any, dict[str, Any]]]
 
 
+def normalize_image_search_key(value: Any) -> str:
+    """仅接受去掉空白后非空的字符串搜图凭证。"""
+    return value.strip() if isinstance(value, str) else ""
+
+
 def parse_cmd_args(text: str) -> dict[str, Any]:
     """解析 /grok 正文开头的参数。
 
@@ -194,11 +199,11 @@ def plan_backends(
     if not valid_images:
         notes.append("未检测到可用图片，已本地跳过反向搜图（未产生搜图请求）")
         return {"images": [], "backends": backends, "notes": notes, "requested": True}
-    if use_serpapi and not serpapi_key:
+    if use_serpapi and not normalize_image_search_key(serpapi_key):
         notes.append("未配置 SerpAPI Key，已跳过 Google Lens 搜图")
     else:
         backends["serpapi"] = use_serpapi
-    if use_saucenao and not saucenao_key:
+    if use_saucenao and not normalize_image_search_key(saucenao_key):
         notes.append("未配置 SauceNAO Key，已跳过 SauceNAO 搜图")
     else:
         backends["saucenao"] = use_saucenao
@@ -305,6 +310,8 @@ async def run_reverse_image_search(
     无有效图片时本地拦截，不会调用任何后端；单后端失败不影响另一家结果。
     proxy 沿用 connection_settings.proxy，透传给后端适配函数。
     """
+    serpapi_key = normalize_image_search_key(serpapi_key)
+    saucenao_key = normalize_image_search_key(saucenao_key)
     valid, invalid_count = validate_images(images)
     plan = plan_backends(
         use_serpapi=use_serpapi,
