@@ -658,6 +658,42 @@ def test_reverse_image_search_skips_backend_without_key(monkeypatch):
     assert any("SauceNAO" in note for note in agg["notes"])
 
 
+@pytest.mark.parametrize("backend", ["serpapi", "saucenao"])
+@pytest.mark.parametrize("key", [123, {"bad": "key"}, " \t\n"])
+@pytest.mark.parametrize("has_valid_other_key", [False, True])
+def test_reverse_image_search_rejects_invalid_keys_or_skips_backend(
+    monkeypatch, backend, key, has_valid_other_key
+):
+    other = "saucenao" if backend == "serpapi" else "serpapi"
+    keys = {"serpapi_api_key": "", "saucenao_api_key": ""}
+    keys[f"{backend}_api_key"] = key
+    if has_valid_other_key:
+        keys[f"{other}_api_key"] = "  valid-fixture-key\n"
+    plugin, stub = _initialized_plugin(
+        monkeypatch, _base_config(reverse_image_search=keys)
+    )
+    calls = []
+    _install_fake_backends(monkeypatch, calls)
+    svc = plugin.get_service()
+    assert svc.get_status()["image_search_ready"] is has_valid_other_key
+    assert isinstance(plugin._help_text(), str)
+    request = svc.reverse_image_search(
+        [_png_b64()], use_serpapi=True, use_saucenao=True
+    )
+    if has_valid_other_key:
+        agg = asyncio.run(request)
+        assert calls == [(other, "valid-fixture-key")]
+        assert agg[other]["ok"] is True
+        assert agg[backend]["ok"] is False
+        assert agg["notes"]
+    else:
+        with pytest.raises(public_api.PluginServiceError) as exc_info:
+            asyncio.run(request)
+        assert exc_info.value.code == "not_ready"
+        assert calls == []
+    assert stub.posts() == []
+
+
 def test_reverse_image_search_requires_configuration_and_valid_params(monkeypatch):
     config = _base_config(
         connection_settings={"base_url": "", "api_key": ""},

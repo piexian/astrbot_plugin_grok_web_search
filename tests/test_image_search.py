@@ -3,6 +3,7 @@
 import asyncio
 import base64
 
+import pytest
 from PIL import Image
 
 from tool.image_search import (
@@ -92,6 +93,45 @@ def test_plan_caps_images():
     )
     assert plan["images"] == ["a", "b", "c"]
     assert any("上限" in n for n in plan["notes"])
+
+
+@pytest.mark.parametrize("backend", ["serpapi", "saucenao"])
+@pytest.mark.parametrize("key", [123, {"bad": "key"}, " \t\n"])
+def test_plan_invalid_key_skips_backend(backend, key):
+    keys = {"serpapi_key": "valid-key", "saucenao_key": "valid-key"}
+    keys[f"{backend}_key"] = key
+    plan = plan_backends(
+        use_serpapi=True, use_saucenao=True, valid_images=["image"], **keys
+    )
+    other = "saucenao" if backend == "serpapi" else "serpapi"
+    assert plan["backends"] == {backend: False, other: True}
+    assert plan["notes"]
+
+
+@pytest.mark.parametrize("backend", ["serpapi", "saucenao"])
+@pytest.mark.parametrize("key", [123, {"bad": "key"}, " \t\n"])
+def test_run_invalid_key_skips_backend_and_normalizes_valid_key(backend, key):
+    calls = []
+
+    async def fake_fn(image, *, api_key, timeout, proxy=None):
+        calls.append(api_key)
+        return {"ok": True, "payload": {}, "error": ""}
+
+    keys = {"serpapi_key": "  valid-key\n", "saucenao_key": "  valid-key\n"}
+    keys[f"{backend}_key"] = key
+    agg = asyncio.run(
+        run_reverse_image_search(
+            [_png_b64()],
+            use_serpapi=True,
+            use_saucenao=True,
+            serpapi_fn=fake_fn,
+            saucenao_fn=fake_fn,
+            **keys,
+        )
+    )
+    assert calls == ["valid-key"]
+    assert agg[backend]["ok"] is False
+    assert agg["notes"]
 
 
 # ─── 编排：无图零请求 / 单后端失败不互相影响 ───────────────

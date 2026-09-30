@@ -101,7 +101,7 @@ await service.reverse_image_search(
 
 返回既有聚合字典：`requested / serpapi / saucenao / notes / evidence_text`。
 两个开关默认 `False`，不会替调用方启用任何收费后端；未配置 Key 的后端按现有
-编排本地跳过并在 `notes` 说明。
+编排本地跳过并在 `notes` 说明。搜图 Key 仅接受去掉空白后非空的字符串；两家均无有效 Key 时 SDK 抛 `not_ready`，仅一家有效时跳过无效后端。
 
 ## 错误与生命周期
 
