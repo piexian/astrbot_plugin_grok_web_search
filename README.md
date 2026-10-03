@@ -93,11 +93,14 @@
 
 启用 `render_as_image` 后，`/grok` 指令的搜索结果将渲染为精美的图片卡片发送：
 
-- **面板式布局**：每个标题自动分割为独立面板，圆角矩形 + 科技青竖条装饰
+- **面板式布局**：`#` / `##` 标题自动分割为独立面板，圆角矩形 + 科技青竖条装饰；`###` 作为面板内小标题
 - **结构化正文**：卡片模式下内置提示词会要求 Grok 返回带标题/列表的 Markdown，正文按 `##` 标题自动分面板，避免渲染成一大块文字墙
 - **装饰行清理**：自动剥离中转端点可能泄漏进正文的 `GROK DATA STREAM` / `SYS.STATUS` / `MODEL ::` 等终端装饰行
+- **页眉 / 页脚**：页眉显示插件 logo、名称、生成时间与版本号徽章；页脚显示模型、耗时、token 用量与插件仓库地址（版本号与仓库地址自动读取 `metadata.yaml`）
+- **高清输出**：默认 2x 超采样，手机端放大查看文字依旧清晰；超长结果自动退回 1x 控制内存
 - **日/夜自动主题**：`card_theme` 为 `auto` 时根据系统时间自动切换（7:00-18:00 浅色）
-- **Markdown 支持**：标题、列表、代码块、引用、**粗体**、`行内代码`
+- **Markdown 支持**：标题、列表（含嵌套 / 有序）、代码块（显示语言标签）、引用、表格、分隔线、**粗体**、`行内代码`、[链接](#)；英文单词整体换行、中文标点避头；不支持的 emoji 自动剔除
+- **文中引用**：正文里的 `[[1]](url)` 等引用渲染为数字角标，网址统一列在卡片底部「文中引用」，正文不再夹杂长链接
 - **来源链接**：以单独文本消息发送（可点击/复制）
 
 启用 `send_as_forward` 后，OneBot v11/aiocqhttp 平台会优先将 `/grok` 结果作为合并转发发送。
@@ -108,7 +111,7 @@
 |:---:|:---:|
 | ![深色主题](https://github.com/piexian/astrbot_plugin_grok_web_search/blob/master/image/dark.png) | ![浅色主题](https://github.com/piexian/astrbot_plugin_grok_web_search/blob/master/image/light.png) |
 
-**字体说明**：首次启用时自动按 NJU → 清华 TUNA → astrdark 加速 → GitHub 直连的顺序下载 Sarasa Term Slab SC 字体；每个下载源都会校验 7z 魔数、文件大小与 SHA256（优先使用官方发行元数据，失败回退内置已核验记录），坏包自动换源，失败时保留旧字体不影响文本输出。也可在 `data/plugin_data/astrbot_plugin_grok_web_search/font/` 目录放入自定义 `.ttf` 字体文件。
+**字体说明**：首次启用时自动按 NJU → 清华 TUNA → astrdark 加速 → GitHub 直连的顺序下载 Sarasa Term Slab SC **Unhinted** 字体（约 48MB，字体不随插件分发）；每个下载源都会校验 7z 魔数、文件大小与 SHA256（优先使用官方发行元数据，失败回退内置已核验记录），坏包自动换源，失败时保留旧字体不影响文本输出。也可在 `data/plugin_data/astrbot_plugin_grok_web_search/font/` 目录放入自定义 `.ttf` 字体文件。
 
 ### 扩展参数
 

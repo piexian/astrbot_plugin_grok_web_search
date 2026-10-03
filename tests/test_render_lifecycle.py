@@ -67,9 +67,11 @@ CONTENT = "## T1\n- a **b** `c`\n\n> quote\n```py\nprint(1)\n```"
 
 def test_render_theme_isolation_and_determinism(monkeypatch):
     _stub_fonts(monkeypatch)
-    dark = card_render.render_search_card(CONTENT, theme="dark")
-    light = card_render.render_search_card(CONTENT, theme="light")
-    dark_again = card_render.render_search_card(CONTENT, theme="dark")
+    # 页眉默认显示当前时间，固定 timestamp 避免跨分钟导致的偶发不一致
+    ts = "2026-01-01 00:00"
+    dark = card_render.render_search_card(CONTENT, theme="dark", timestamp=ts)
+    light = card_render.render_search_card(CONTENT, theme="light", timestamp=ts)
+    dark_again = card_render.render_search_card(CONTENT, theme="dark", timestamp=ts)
     assert dark != light, "暗/亮主题必须产出不同图片"
     assert dark == dark_again, "同主题同内容必须确定性输出（无跨调用主题串扰）"
 
@@ -80,6 +82,92 @@ def test_render_sources_panel_theme_isolation(monkeypatch):
     dark = card_render.render_search_card(CONTENT, sources=sources, theme="dark")
     light = card_render.render_search_card(CONTENT, sources=sources, theme="light")
     assert dark != light
+
+
+def test_card_shows_plugin_version_and_repo_from_metadata(monkeypatch):
+    """页眉版本号与页脚仓库地址默认取自 metadata.yaml，显式传 "" 可隐藏。"""
+    _stub_fonts(monkeypatch)
+    meta = card_render._plugin_meta()
+    assert meta.get("version", "").startswith("v")
+    assert meta.get("repo", "").startswith("https://github.com/")
+
+    kw = {"theme": "dark", "timestamp": "", "model": "m"}
+    default = card_render.render_search_card(CONTENT, **kw)
+    explicit = card_render.render_search_card(
+        CONTENT, plugin_version=meta["version"], repo_url=meta["repo"], **kw
+    )
+    hidden = card_render.render_search_card(
+        CONTENT, plugin_version="", repo_url="", **kw
+    )
+    assert default == explicit
+    assert default != hidden
+
+
+def test_render_extended_markdown_and_scale_fallback(monkeypatch):
+    """表格/分隔线/嵌套列表/链接/emoji 均可渲染；超大图自动退回 1x。"""
+    from io import BytesIO
+
+    from PIL import Image
+
+    _stub_fonts(monkeypatch)
+    md = (
+        "答案 [官网](https://x.ai) 🚀\n\n## 表\n| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+        "---\n- x\n  - y\n10. z\n### 小标题\n> **引用** `c`"
+    )
+    png = card_render.render_search_card(md, theme="light", timestamp="")
+    assert Image.open(BytesIO(png)).width == 1600
+
+    monkeypatch.setattr(card_render, "_MAX_PIXELS", 1)
+    png = card_render.render_search_card(md, theme="light", timestamp="")
+    assert Image.open(BytesIO(png)).width == 800
+
+
+def test_wrap_keeps_closing_punctuation_off_line_start(monkeypatch):
+    _stub_fonts(monkeypatch)
+    font = card_render._get_font(size=18)
+    text = "测" * 9 + "。"
+    width = font.getlength("测" * 9)
+    lines = card_render._wrap_plain(text, font, width)
+    assert lines == [text], "避头标点应悬挂在行尾"
+
+
+def test_inline_citations_become_badges_and_urls_are_shortened():
+    """AI 常在正文里放 [[n]](url)：渲染为角标，不再原样输出长网址。"""
+    spans = card_render._parse_rich(
+        "**结论。**[[1]](https://www.163.com/dy/a.html) 详见 "
+        "[2](https://x.ai/b) 与 [3]、【4】，另见 https://www.example.com/p/q.html 。"
+    )
+    assert ("结论。", "b") in spans
+    assert [t for t, s in spans if s == "cite"] == ["1", "2", "3", "4"]
+    assert ("example.com", "l") in spans
+    assert not any("http" in t for t, _ in spans)
+    # 角标紧贴前文（去掉角标前的尾随空白）
+    assert spans[spans.index(("2", "cite")) - 1][0].endswith("详见")
+
+
+def test_citations_collected_for_reference_list():
+    text = (
+        "a[[2]](https://b.com/x) b[[1]](https://a.com/y) "
+        "c[[2]](https://other.com) d[1](https://a.com/y)"
+    )
+    assert card_render._collect_citations(text) == [
+        ("1", "https://a.com/y"),
+        ("2", "https://b.com/x"),
+    ]
+    assert card_render._strip_md("标题[[1]](https://a.com) **粗**") == "标题 粗"
+
+
+def test_citation_list_rendered_only_without_sources(monkeypatch):
+    _stub_fonts(monkeypatch)
+    md = "结论。[[1]](https://www.163.com/dy/article/L7VTPFHU0553F5QV.html)"
+    kw = {"theme": "dark", "timestamp": ""}
+    with_list = card_render.render_search_card(md, **kw)
+    without = card_render.render_search_card(md, show_citations=False, **kw)
+    assert with_list != without
+    src = [{"url": "https://a.com", "title": "A"}]
+    a = card_render.render_search_card(md, sources=src, **kw)
+    b = card_render.render_search_card(md, sources=src, show_citations=False, **kw)
+    assert a == b, "已传入来源时不再重复渲染文中引用列表"
 
 
 # ─── 渲染卸载到线程、并发串行化与取消安全 ────────────────────

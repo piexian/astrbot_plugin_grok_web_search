@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -34,19 +35,34 @@ from astrbot.api import logger
 # ─── 常量 ────────────────────────────────────────────────────
 
 REPO = "be5invis/Sarasa-Gothic"
-ARCHIVE_TEMPLATE = "SarasaTermSlabSC-TTF-{version}.7z"
-DEFAULT_FONT_REGULAR = "SarasaTermSlabSC-Regular.ttf"
-DEFAULT_FONT_BOLD = "SarasaTermSlabSC-Bold.ttf"
+# 使用 Unhinted 版本：卡片以 2x 超采样渲染，hinting 无可见收益，
+# 去掉后 FreeType 栅格化约快 4 倍，压缩包也更小（约 50MB vs 66MB）
+ARCHIVE_TEMPLATE = "SarasaTermSlabSC-TTF-Unhinted-{version}.7z"
+# 压缩包内的文件名（hinted / unhinted 包内同名）
+ARCHIVE_FONT_REGULAR = "SarasaTermSlabSC-Regular.ttf"
+ARCHIVE_FONT_BOLD = "SarasaTermSlabSC-Bold.ttf"
+# 安装到字体目录的文件名：与旧版 hinted 字体区分，升级时不覆盖可能正被占用的旧文件
+DEFAULT_FONT_REGULAR = "SarasaTermSlabSC-Unhinted-Regular.ttf"
+DEFAULT_FONT_BOLD = "SarasaTermSlabSC-Unhinted-Bold.ttf"
+# 旧版本插件安装的 hinted 字体（与压缩包内同名）
+LEGACY_FONT_REGULAR = ARCHIVE_FONT_REGULAR
+LEGACY_FONT_BOLD = ARCHIVE_FONT_BOLD
 GITHUB_API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 
-# 内置已核验资产记录（2026-09-23 经真实网络核验：整包 SHA256 与官方发行摘要一致）。
-# 镜像只展示最新版本，旧版本文件在镜像上已 404，回退版本必须带完整记录。
-FALLBACK_VERSION = "1.0.41"
+# 内置已核验资产记录（2026-10-03 经真实网络核验：与 GitHub Release 资产 digest 一致）。
+# 镜像只展示最新版本，旧版本文件在镜像上 404，回退时由 astrdark / GitHub 兜底，
+# 因此回退版本必须带完整记录。
+FALLBACK_VERSION = "1.0.42"
 VERIFIED_ASSETS: dict[str, dict[str, object]] = {
-    FALLBACK_VERSION: {
-        "filename": "SarasaTermSlabSC-TTF-1.0.41.7z",
-        "size": 66119192,
-        "sha256": "d240c69b2424dc7165f9af57a6e9ecac653afae5ff4d4c034d8d203efc13c92c",
+    "1.0.42": {
+        "filename": "SarasaTermSlabSC-TTF-Unhinted-1.0.42.7z",
+        "size": 50079124,
+        "sha256": "c732121fce1291f67047a525c9a207889915c2743d85220e08805bb74d914857",
+    },
+    "1.0.41": {
+        "filename": "SarasaTermSlabSC-TTF-Unhinted-1.0.41.7z",
+        "size": 49963716,
+        "sha256": "9a19670d3b175bccfa20db53adb4e339f37d8df1ff5e9dcc562340484c8b5397",
     },
 }
 
@@ -62,6 +78,8 @@ _ACCELERATOR_TEMPLATE = (
 _GITHUB_TEMPLATE = "https://github.com/{repo}/releases/download/v{version}/{archive}"
 
 _NUM_THREADS = 4
+# 单个分段遇到断流/网络错误时的续传次数（从已收到的偏移继续，不重下整段）
+_CHUNK_RETRIES = 3
 _SEVEN_Z_MAGIC = b"7z\xbc\xaf\x27\x1c"
 _VERSION_RE = re.compile(r"^v?(\d+\.\d+\.\d+)$")
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -233,9 +251,15 @@ def discover_latest_asset(timeout: float = 8.0) -> tuple[str, dict[str, object]]
 
 
 def find_fonts_in_dir(font_dir: str) -> tuple[str, str] | None:
-    """在目录中查找可用字体对 (regular, bold)。"""
+    """在目录中查找可用字体对 (regular, bold)；内置 Unhinted 字体对优先。"""
     if not os.path.isdir(font_dir):
         return None
+    default_pair = (
+        os.path.join(font_dir, DEFAULT_FONT_REGULAR),
+        os.path.join(font_dir, DEFAULT_FONT_BOLD),
+    )
+    if all(os.path.isfile(p) for p in default_pair):
+        return default_pair
     ttf_files = [f for f in os.listdir(font_dir) if f.lower().endswith(".ttf")]
     if not ttf_files:
         return None
@@ -256,6 +280,34 @@ def find_fonts_in_dir(font_dir: str) -> tuple[str, str] | None:
         regular = bold
 
     return (regular, bold) if regular and bold else None
+
+
+def _is_pair(found: tuple[str, str] | None, regular: str, bold: str) -> bool:
+    return bool(found) and (
+        os.path.basename(found[0]),
+        os.path.basename(found[1]),
+    ) == (regular, bold)
+
+
+def is_legacy_pair(found: tuple[str, str] | None) -> bool:
+    """是否为旧版本插件安装的 hinted 字体对（用户自定义字体不算）。"""
+    return _is_pair(found, LEGACY_FONT_REGULAR, LEGACY_FONT_BOLD)
+
+
+def remove_legacy_fonts(font_dir: str) -> None:
+    """Unhinted 字体就位后删除旧 hinted 字体；文件被占用（Windows）时静默跳过，下次启动重试。"""
+    if not _is_pair(
+        find_fonts_in_dir(font_dir), DEFAULT_FONT_REGULAR, DEFAULT_FONT_BOLD
+    ):
+        return
+    for name in (LEGACY_FONT_REGULAR, LEGACY_FONT_BOLD):
+        path = os.path.join(font_dir, name)
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+                logger.info(f"[font-loader] 已清理旧版 hinted 字体: {name}")
+            except OSError:
+                pass
 
 
 # ─── 解压 ─────────────────────────────────────────────────────
@@ -428,13 +480,15 @@ def _download_threaded(
     downloaded_bytes = [0]
     last_logged = [-1]
 
-    def _download_chunk(idx: int, byte_start: int, byte_end: int) -> str:
-        part_file = os.path.join(job_dir, f"chunk-{idx}.part")
+    def _fetch_range(
+        f, byte_start: int, byte_end: int, expected_len: int, received: int
+    ) -> int:
+        """请求 [byte_start+received, byte_end] 追加写入 f，返回累计已收字节。"""
+        req_start = byte_start + received
         req = urllib.request.Request(
             url,
-            headers=_merged_headers({"Range": f"bytes={byte_start}-{byte_end}"}),
+            headers=_merged_headers({"Range": f"bytes={req_start}-{byte_end}"}),
         )
-        expected_len = byte_end - byte_start + 1
         with _urlopen(req, timeout=_DOWNLOAD_TIMEOUT) as response:
             # Range 响应必须为 206，且 Content-Range 起止/总长完整匹配请求区间
             if response.status != 206:
@@ -446,45 +500,78 @@ def _download_threaded(
                     f"{response.headers.get('Content-Range')!r}"
                 )
             cr_start, cr_end, cr_total = parsed
-            if (cr_start, cr_end) != (byte_start, byte_end):
+            if (cr_start, cr_end) != (req_start, byte_end):
                 raise ValueError(
-                    f"Content-Range 区间不符: 期望 {byte_start}-{byte_end}，"
+                    f"Content-Range 区间不符: 期望 {req_start}-{byte_end}，"
                     f"实际 {cr_start}-{cr_end}"
                 )
             if cr_total != total_size:
                 raise ValueError(
                     f"Content-Range 总长不符: 期望 {total_size}，实际 {cr_total}"
                 )
-            received = 0
-            with open(part_file, "wb") as f:
-                while True:
-                    job.check()
-                    if time.monotonic() > deadline:
-                        raise TimeoutError("字体下载总预算超时")
-                    buf = response.read(64 * 1024)
-                    if not buf:
-                        break
-                    received += len(buf)
-                    if received > expected_len:
-                        raise ValueError(
-                            f"分段响应超出请求区间（>{expected_len} 字节），拒绝写入"
+            while True:
+                job.check()
+                if time.monotonic() > deadline:
+                    raise TimeoutError("字体下载总预算超时")
+                buf = response.read(64 * 1024)
+                if not buf:
+                    break
+                if received + len(buf) > expected_len:
+                    raise ValueError(
+                        f"分段响应超出请求区间（>{expected_len} 字节），拒绝写入"
+                    )
+                f.write(buf)
+                received += len(buf)
+                with downloaded_lock:
+                    downloaded_bytes[0] += len(buf)
+                    pct = int(downloaded_bytes[0] / total_size * 100)
+                    if pct // 10 > last_logged[0] // 10:
+                        dl_mb = downloaded_bytes[0] / 1024 / 1024
+                        tot_mb = total_size / 1024 / 1024
+                        logger.info(
+                            f"[font-loader] 字体下载进度: {pct}% "
+                            f"({dl_mb:.1f}/{tot_mb:.1f}MB)"
                         )
-                    f.write(buf)
-                    with downloaded_lock:
-                        downloaded_bytes[0] += len(buf)
-                        pct = int(downloaded_bytes[0] / total_size * 100)
-                        if pct // 10 > last_logged[0] // 10:
-                            dl_mb = downloaded_bytes[0] / 1024 / 1024
-                            tot_mb = total_size / 1024 / 1024
-                            logger.info(
-                                f"[font-loader] 字体下载进度: {pct}% "
-                                f"({dl_mb:.1f}/{tot_mb:.1f}MB)"
-                            )
-                            last_logged[0] = pct
-            if received != expected_len:
-                raise ValueError(
-                    f"分段长度不符: 期望 {expected_len} 字节，实际 {received} 字节"
+                        last_logged[0] = pct
+        return received
+
+    def _download_chunk(idx: int, byte_start: int, byte_end: int) -> str:
+        part_file = os.path.join(job_dir, f"chunk-{idx}.part")
+        expected_len = byte_end - byte_start + 1
+        received = 0
+        with open(part_file, "wb") as f:
+            for attempt in range(_CHUNK_RETRIES + 1):
+                error: Exception | None = None
+                try:
+                    _fetch_range(f, byte_start, byte_end, expected_len, f.tell())
+                except urllib.error.HTTPError as exc:
+                    # 4xx 是确定性失败，不续传；5xx 视为临时故障
+                    if exc.code < 500:
+                        raise
+                    error = exc
+                except (OSError, http.client.HTTPException) as exc:
+                    # 断流 / 连接重置 / 读超时：保留已收数据，从断点续传
+                    if time.monotonic() > deadline:
+                        raise
+                    error = exc
+                # 以文件写入位置为准：中途抛错前已写入的数据同样计入续传偏移
+                received = f.tell()
+                if error is None and received == expected_len:
+                    break
+                job.check()
+                if attempt == _CHUNK_RETRIES or time.monotonic() > deadline:
+                    if error is not None:
+                        raise error
+                    break
+                reason = error or f"提前结束 {received}/{expected_len} 字节"
+                logger.info(
+                    f"[font-loader] 分段 {idx} 中断（{reason}），"
+                    f"从 {received} 字节续传 ({attempt + 1}/{_CHUNK_RETRIES})"
                 )
+        if received != expected_len:
+            raise ValueError(
+                f"分段长度不符: 期望 {expected_len} 字节，实际 {received} 字节"
+            )
         return part_file
 
     part_files: list[str | None] = [None] * _NUM_THREADS
@@ -784,7 +871,7 @@ def download_and_install(
         os.makedirs(staging, exist_ok=True)
         source_archive = cache_path if os.path.exists(cache_path) else archive_path
         _extract_7z(source_archive, staging)
-        expected = {DEFAULT_FONT_REGULAR, DEFAULT_FONT_BOLD}
+        expected = {ARCHIVE_FONT_REGULAR, ARCHIVE_FONT_BOLD}
         found = _collect_fonts(staging, expected)
         if set(found) != expected:
             missing = sorted(expected - set(found))
@@ -794,16 +881,26 @@ def download_and_install(
         if not _fonts_loadable(sorted(found.values())):
             raise RuntimeError("字体文件无法加载，保留原字体")
 
-        _publish_fonts(job, found, font_dir)
-        logger.info(f"[font-loader] 字体安装完成 ({len(found)} 个文件)")
+        # 以 Unhinted 专用文件名发布，不覆盖旧版 hinted 同名文件
+        install = {
+            DEFAULT_FONT_REGULAR: found[ARCHIVE_FONT_REGULAR],
+            DEFAULT_FONT_BOLD: found[ARCHIVE_FONT_BOLD],
+        }
+        _publish_fonts(job, install, font_dir)
+        logger.info(f"[font-loader] 字体安装完成 ({len(install)} 个文件)")
     finally:
         shutil.rmtree(job_dir, ignore_errors=True)
 
 
 def init_fonts(font_dir: str, job: DownloadJob | None = None) -> tuple[str, str] | None:
-    """探测/下载字体，返回 (regular_path, bold_path) 或 None。"""
+    """探测/下载字体，返回 (regular_path, bold_path) 或 None。
+
+    已有任何可用字体（含旧版 hinted、用户自定义）都直接返回，不阻塞卡片可用；
+    旧版 hinted 字体的升级由 upgrade_legacy_fonts 在其后单独进行。
+    """
     found = find_fonts_in_dir(font_dir)
     if found:
+        remove_legacy_fonts(font_dir)
         return found
     try:
         download_and_install(font_dir, job=job)
@@ -811,3 +908,24 @@ def init_fonts(font_dir: str, job: DownloadJob | None = None) -> tuple[str, str]
         logger.warning(f"[font-loader] 字体下载失败: {e}")
         return None
     return find_fonts_in_dir(font_dir)
+
+
+def upgrade_legacy_fonts(
+    font_dir: str, job: DownloadJob | None = None
+) -> tuple[str, str] | None:
+    """把旧版本插件安装的 hinted 字体升级为 Unhinted。
+
+    新字体以不同文件名发布，旧字体在此期间照常使用、不被覆盖；
+    成功返回新字体对，失败（含全部下载源失败）保留旧字体并返回 None，下次启动重试。
+    用户自定义字体与已是 Unhinted 的目录不做任何处理。
+    """
+    if not is_legacy_pair(find_fonts_in_dir(font_dir)):
+        return None
+    logger.info("[font-loader] 检测到旧版 hinted 字体，后台升级为 Unhinted（渲染更快）")
+    try:
+        download_and_install(font_dir, job=job)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[font-loader] 字体升级失败，继续使用旧字体: {e}")
+        return None
+    found = find_fonts_in_dir(font_dir)
+    return found if _is_pair(found, DEFAULT_FONT_REGULAR, DEFAULT_FONT_BOLD) else None

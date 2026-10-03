@@ -275,6 +275,14 @@ class GrokSearchPlugin(Star):
                 logger.info(f"[{PLUGIN_NAME}] 卡片渲染字体已就绪: {font_dir}")
             else:
                 logger.warning(f"[{PLUGIN_NAME}] 卡片渲染字体初始化失败")
+            # 旧版 hinted 字体：上面已先启用，这里再升级为渲染更快的 Unhinted；
+            # 新字体用不同文件名发布，成功后切换并清理旧字体，失败则继续用旧字体
+            if self._card_fonts_ready and font_loader.upgrade_legacy_fonts(
+                font_dir, job=job
+            ):
+                if init_fonts(font_dir, job=job):
+                    font_loader.remove_legacy_fonts(font_dir)
+                    logger.info(f"[{PLUGIN_NAME}] 卡片渲染字体已升级为 Unhinted 版本")
         except Exception as e:
             logger.warning(f"[{PLUGIN_NAME}] 字体初始化异常: {e}")
 

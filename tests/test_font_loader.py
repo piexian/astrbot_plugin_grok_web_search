@@ -1,9 +1,11 @@
 """字体下载多源校验、缓存修复、staging 发布、作业取消与资产记录回归。"""
 
 import hashlib
+import http.client
 import os
 import shutil
 import time
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -45,6 +47,8 @@ OK_BYTES = _fixture_bytes(FONTS_OK)
 PARTIAL_BYTES = _fixture_bytes(FONTS_PARTIAL)
 DUP_BYTES = _fixture_bytes(FONTS_DUP)
 OK_SHA = hashlib.sha256(OK_BYTES).hexdigest()
+INSTALLED_REGULAR = font_loader.DEFAULT_FONT_REGULAR
+INSTALLED_BOLD = font_loader.DEFAULT_FONT_BOLD
 PARTIAL_SHA = hashlib.sha256(PARTIAL_BYTES).hexdigest()
 DUP_SHA = hashlib.sha256(DUP_BYTES).hexdigest()
 
@@ -120,28 +124,44 @@ def test_download_urls_order_and_layout():
 
 
 def test_fallback_version_has_verified_record():
-    assert font_loader.FALLBACK_VERSION == "1.0.41"
-    record = font_loader.VERIFIED_ASSETS["1.0.41"]
-    assert record["size"] == 66119192
-    assert record["sha256"].startswith("d240c69b")
+    """回退版本为 Unhinted 资产，且记录与官方 Release digest 一致（2026-10-03 核验）。"""
+    assert font_loader.FALLBACK_VERSION == "1.0.42"
+    record = font_loader.VERIFIED_ASSETS["1.0.42"]
+    assert record["filename"] == "SarasaTermSlabSC-TTF-Unhinted-1.0.42.7z"
+    assert record["size"] == 50079124
+    assert record["sha256"].startswith("c732121f")
+    for ver, rec in font_loader.VERIFIED_ASSETS.items():
+        assert rec["filename"] == font_loader.ARCHIVE_TEMPLATE.format(version=ver)
+        assert font_loader._is_complete_record(rec)
+
+
+def test_download_urls_use_unhinted_archive():
+    urls = font_loader.build_download_urls("1.0.42")
+    assert all(u.endswith("SarasaTermSlabSC-TTF-Unhinted-1.0.42.7z") for u in urls)
 
 
 def test_asset_record_from_release_metadata():
+    """真实 Release 同时有 hinted 与 Unhinted 资产，必须只取 Unhinted 的记录。"""
     real_sha = "a" * 64
     data = {
         "tag_name": "v1.0.42",
         "assets": [
             {
                 "name": "SarasaTermSlabSC-TTF-1.0.42.7z",
+                "size": 9999,
+                "digest": f"sha256:{'b' * 64}",
+            },
+            {
+                "name": "SarasaTermSlabSC-TTF-Unhinted-1.0.42.7z",
                 "size": 1234,
                 "digest": f"sha256:{real_sha}",
-            }
+            },
         ],
     }
     version, record = font_loader._asset_record_from_release(data)
     assert version == "1.0.42"
     assert record == {
-        "filename": "SarasaTermSlabSC-TTF-1.0.42.7z",
+        "filename": "SarasaTermSlabSC-TTF-Unhinted-1.0.42.7z",
         "size": 1234,
         "sha256": real_sha,
     }
@@ -183,7 +203,7 @@ def test_asset_record_without_digest_falls_back_to_builtin():
         font_loader.FALLBACK_VERSION, {"size": None, "sha256": None}
     )
     assert ver2 == font_loader.FALLBACK_VERSION
-    assert rec2["sha256"] == font_loader.VERIFIED_ASSETS["1.0.41"]["sha256"]
+    assert rec2["sha256"] == font_loader.VERIFIED_ASSETS[ver2]["sha256"]
 
     complete = {"size": 1, "sha256": "a" * 64}
     ver3, rec3 = font_loader.resolve_asset_record("3.0.0", complete)
@@ -338,6 +358,121 @@ def test_threaded_download_rejects_overlong_chunk(monkeypatch, tmp_path):
     assert not list(tmp_path.glob("chunk-*.part"))
 
 
+class _BrokenResponse(_FakeResponse):
+    """先吐出部分数据再抛网络异常，模拟连接中途断开。"""
+
+    def __init__(self, chunks, exc, **kwargs):
+        super().__init__(chunks, **kwargs)
+        self._exc = exc
+
+    def read(self, size=-1):
+        if self._chunks:
+            return self._chunks.pop(0)
+        raise self._exc
+
+
+def _payload(total=40):
+    return bytes(range(total))
+
+
+def _resume_urlopen(monkeypatch, first_response_factory, calls):
+    """首次请求 0 号分段返回 first_response_factory 的结果，其余按 Range 正常返回。"""
+    data = _payload()
+    seen_first = [False]
+
+    def fake_urlopen(req, timeout):
+        range_header = dict(req.header_items()).get("Range", "")
+        first, last = (int(x) for x in range_header.replace("bytes=", "").split("-"))
+        calls.append((first, last))
+        cr = f"bytes {first}-{last}/40"
+        if first == 0 and not seen_first[0]:
+            seen_first[0] = True
+            return first_response_factory(data[first : last + 1], cr)
+        return _FakeResponse([data[first : last + 1]], content_range=cr)
+
+    monkeypatch.setattr(font_loader, "_urlopen", fake_urlopen)
+    return data
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        # 服务端提前结束（短读）
+        lambda chunk, cr: _FakeResponse([chunk[:4]], content_range=cr),
+        # 读到一半连接被重置
+        lambda chunk, cr: _BrokenResponse(
+            [chunk[:4]], ConnectionResetError("reset"), content_range=cr
+        ),
+        # http.client 报告不完整读取
+        lambda chunk, cr: _BrokenResponse(
+            [chunk[:4]], http.client.IncompleteRead(b""), content_range=cr
+        ),
+    ],
+    ids=["short-read", "conn-reset", "incomplete-read"],
+)
+def test_threaded_download_resumes_interrupted_chunk(monkeypatch, tmp_path, factory):
+    calls: list[tuple[int, int]] = []
+    data = _resume_urlopen(monkeypatch, factory, calls)
+    dest = tmp_path / "out.7z"
+    font_loader._download_threaded(
+        "https://mirror.invalid/x",
+        str(dest),
+        str(tmp_path),
+        40,
+        deadline=time.monotonic() + 60,
+        job=font_loader.DownloadJob(),
+    )
+    # 从已收到的 4 字节处续传，而不是重下整段
+    assert (4, 9) in calls
+    assert dest.read_bytes() == data
+    assert not list(tmp_path.glob("chunk-*.part"))
+
+
+def test_threaded_download_gives_up_after_retries(monkeypatch, tmp_path):
+    data = _payload()
+
+    def fake_urlopen(req, timeout):
+        range_header = dict(req.header_items()).get("Range", "")
+        first, last = (int(x) for x in range_header.replace("bytes=", "").split("-"))
+        cr = f"bytes {first}-{last}/40"
+        if first < 10:  # 0 号分段永远只给 1 字节
+            return _FakeResponse([data[first : first + 1]], content_range=cr)
+        return _FakeResponse([data[first : last + 1]], content_range=cr)
+
+    monkeypatch.setattr(font_loader, "_urlopen", fake_urlopen)
+    with pytest.raises(ValueError, match="分段长度不符"):
+        font_loader._download_threaded(
+            "https://mirror.invalid/x",
+            str(tmp_path / "out.7z"),
+            str(tmp_path),
+            40,
+            deadline=time.monotonic() + 60,
+            job=font_loader.DownloadJob(),
+        )
+    assert not list(tmp_path.glob("chunk-*.part"))
+
+
+def test_threaded_download_does_not_retry_4xx(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_urlopen(req, timeout):
+        calls.append(dict(req.header_items()).get("Range"))
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(font_loader, "_urlopen", fake_urlopen)
+    with pytest.raises(urllib.error.HTTPError):
+        font_loader._download_threaded(
+            "https://mirror.invalid/x",
+            str(tmp_path / "out.7z"),
+            str(tmp_path),
+            40,
+            deadline=time.monotonic() + 60,
+            job=font_loader.DownloadJob(),
+        )
+    # 每个分段只请求一次
+    assert len(calls) == len(set(calls)) == font_loader._NUM_THREADS
+
+
 def test_single_download_rejects_overlong_response(monkeypatch, tmp_path):
     resp = _FakeResponse([b"x" * 8, b"x" * 8], status=200)
     _patch_urlopen_responses(monkeypatch, [resp])
@@ -369,7 +504,7 @@ def test_corrupt_cache_is_redownloaded_and_repaired(monkeypatch, tmp_path):
         monkeypatch, tmp_path, [OK_BYTES], _record(OK_BYTES)
     )
     assert attempts == ["source-0"]  # 坏缓存清理后进入正常下载链
-    assert (font_dir / "SarasaTermSlabSC-Bold.ttf").exists()
+    assert (font_dir / INSTALLED_BOLD).exists()
     assert (font_dir / "_font_download.7z").read_bytes() == OK_BYTES  # 缓存已修复
 
 
@@ -387,7 +522,7 @@ def test_valid_cache_skips_download(monkeypatch, tmp_path):
     font_loader.download_and_install(
         str(font_dir), version="1.0.41", record=_record(OK_BYTES)
     )
-    assert (font_dir / "SarasaTermSlabSC-Bold.ttf").exists()
+    assert (font_dir / INSTALLED_BOLD).exists()
 
 
 @_needs_extractor
@@ -408,7 +543,7 @@ def test_cleanup_failure_does_not_block_install(monkeypatch, tmp_path):
         monkeypatch, tmp_path, [OK_BYTES], _record(OK_BYTES)
     )
     assert attempts == ["source-0"]
-    assert (font_dir / "SarasaTermSlabSC-Bold.ttf").exists()
+    assert (font_dir / INSTALLED_BOLD).exists()
 
 
 @_needs_extractor
@@ -450,8 +585,8 @@ def test_bad_package_falls_through_to_next_source(monkeypatch, tmp_path):
         monkeypatch, tmp_path, [html, OK_BYTES], _record(OK_BYTES)
     )
     assert len(attempts) == 2  # 坏包在单源校验后立即换源
-    assert (font_dir / "SarasaTermSlabSC-Regular.ttf").exists()
-    assert (font_dir / "SarasaTermSlabSC-Bold.ttf").exists()
+    assert (font_dir / INSTALLED_REGULAR).exists()
+    assert (font_dir / INSTALLED_BOLD).exists()
     # 本次临时产物已清理（作业目录 + 渲染残留）
     assert not list(font_dir.glob("_font_download*.part"))
     assert not list(font_dir.glob(".fontjob-*"))
@@ -463,7 +598,7 @@ def test_sha_mismatch_falls_through(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="所有镜像均下载失败"):
         _install_with_payload(monkeypatch, tmp_path, [OK_BYTES, OK_BYTES], wrong_record)
     font_dir = tmp_path / "font"
-    assert not (font_dir / "SarasaTermSlabSC-Regular.ttf").exists()  # 未启用
+    assert not (font_dir / INSTALLED_REGULAR).exists()  # 未启用
 
 
 @_needs_extractor
@@ -491,8 +626,8 @@ def test_duplicate_nested_font_names_install_once(monkeypatch, tmp_path):
         monkeypatch, tmp_path, [DUP_BYTES], _record(DUP_BYTES)
     )
     assert len(attempts) == 1
-    assert (font_dir / "SarasaTermSlabSC-Regular.ttf").exists()
-    assert (font_dir / "SarasaTermSlabSC-Bold.ttf").exists()
+    assert (font_dir / INSTALLED_REGULAR).exists()
+    assert (font_dir / INSTALLED_BOLD).exists()
 
 
 @_needs_extractor
@@ -500,8 +635,8 @@ def test_publish_failure_restores_previous_pair(monkeypatch, tmp_path):
     """第二个文件发布失败：回滚整个发布，保留旧字体对，不留半成品。"""
     font_dir = tmp_path / "font"
     font_dir.mkdir()
-    old_regular = font_dir / "SarasaTermSlabSC-Regular.ttf"
-    old_bold = font_dir / "SarasaTermSlabSC-Bold.ttf"
+    old_regular = font_dir / INSTALLED_REGULAR
+    old_bold = font_dir / INSTALLED_BOLD
     old_regular.write_bytes(b"old-regular")
     old_bold.write_bytes(b"old-bold")
 
@@ -528,8 +663,8 @@ def test_partial_backup_write_keeps_live_fonts_intact(monkeypatch, tmp_path, fai
     """备份写一半即失败（如 ENOSPC）：不得用半成品备份覆盖完好的原字体。"""
     font_dir = tmp_path / "font"
     font_dir.mkdir()
-    old_regular = font_dir / "SarasaTermSlabSC-Regular.ttf"
-    old_bold = font_dir / "SarasaTermSlabSC-Bold.ttf"
+    old_regular = font_dir / INSTALLED_REGULAR
+    old_bold = font_dir / INSTALLED_BOLD
     old_regular.write_bytes(b"old-regular")
     old_bold.write_bytes(b"old-bold")
 
@@ -570,8 +705,8 @@ def test_cancelled_midpublish_restores_old_pair(monkeypatch, tmp_path):
     """发布中途取消：已替换的文件回滚为旧字体对。"""
     font_dir = tmp_path / "font"
     font_dir.mkdir()
-    (font_dir / "SarasaTermSlabSC-Regular.ttf").write_bytes(b"old-regular")
-    (font_dir / "SarasaTermSlabSC-Bold.ttf").write_bytes(b"old-bold")
+    (font_dir / INSTALLED_REGULAR).write_bytes(b"old-regular")
+    (font_dir / INSTALLED_BOLD).write_bytes(b"old-bold")
 
     job = font_loader.DownloadJob()
     real_replace = font_loader.os.replace
@@ -587,8 +722,8 @@ def test_cancelled_midpublish_restores_old_pair(monkeypatch, tmp_path):
         _install_with_payload(
             monkeypatch, tmp_path, [OK_BYTES], _record(OK_BYTES), job=job
         )
-    assert (font_dir / "SarasaTermSlabSC-Regular.ttf").read_bytes() == b"old-regular"
-    assert (font_dir / "SarasaTermSlabSC-Bold.ttf").read_bytes() == b"old-bold"
+    assert (font_dir / INSTALLED_REGULAR).read_bytes() == b"old-regular"
+    assert (font_dir / INSTALLED_BOLD).read_bytes() == b"old-bold"
     assert not list(font_dir.glob("*.fontnew*"))
     assert not list(font_dir.glob("*.fontbak*"))
 
@@ -681,3 +816,119 @@ def test_no_subprocess_regression():
     source = inspect.getsource(font_loader._extract_7z)
     assert "shutil.which" in source
     assert "shell=True" not in source
+
+
+# ─── 旧版 hinted 字体 → Unhinted 升级 ─────────────────────────
+
+
+def _write_legacy_pair(font_dir: Path) -> tuple[Path, Path]:
+    font_dir.mkdir(parents=True, exist_ok=True)
+    reg = font_dir / font_loader.LEGACY_FONT_REGULAR
+    bold = font_dir / font_loader.LEGACY_FONT_BOLD
+    reg.write_bytes(b"legacy-regular")
+    bold.write_bytes(b"legacy-bold")
+    return reg, bold
+
+
+def test_legacy_fonts_are_used_immediately_without_download(monkeypatch, tmp_path):
+    """升级插件后旧 hinted 字体立即可用：init_fonts 不阻塞下载，也不删除旧字体。"""
+    reg, bold = _write_legacy_pair(tmp_path)
+
+    def fail(*a, **k):
+        raise AssertionError("init_fonts 不应为升级而阻塞下载")
+
+    monkeypatch.setattr(font_loader, "download_and_install", fail)
+    assert font_loader.init_fonts(str(tmp_path)) == (str(reg), str(bold))
+    assert reg.exists() and bold.exists()
+
+
+@_needs_extractor
+def test_upgrade_installs_unhinted_alongside_legacy_then_cleans(monkeypatch, tmp_path):
+    """升级：新字体以不同文件名发布（不覆盖旧文件），切换后才清理旧字体。"""
+    font_dir = tmp_path / "font"
+    reg, bold = _write_legacy_pair(font_dir)
+    _stub_loadable(monkeypatch)
+    attempts = []
+
+    def fake_fetch(url, dest_archive, job_dir, **kwargs):
+        attempts.append(url)
+        if len(attempts) == 1:
+            raise OSError("first mirror down")  # 首个源失败 → 回退下一个源
+        with open(dest_archive, "wb") as f:
+            f.write(OK_BYTES)
+
+    monkeypatch.setattr(font_loader, "_fetch_to_file", fake_fetch)
+    monkeypatch.setattr(font_loader, "build_download_urls", lambda v: ("s-1", "s-2"))
+    monkeypatch.setattr(
+        font_loader, "discover_latest_asset", lambda: ("1.0.42", _record(OK_BYTES))
+    )
+
+    new_pair = font_loader.upgrade_legacy_fonts(str(font_dir))
+    assert attempts == ["s-1", "s-2"]
+    assert new_pair == (
+        str(font_dir / INSTALLED_REGULAR),
+        str(font_dir / INSTALLED_BOLD),
+    )
+    # 发布期间旧字体原样保留（Windows 上可能正被占用，不能覆盖）
+    assert reg.read_bytes() == b"legacy-regular"
+    assert bold.read_bytes() == b"legacy-bold"
+    assert font_loader.find_fonts_in_dir(str(font_dir)) == new_pair
+
+    font_loader.remove_legacy_fonts(str(font_dir))
+    assert not reg.exists() and not bold.exists()
+    assert font_loader.upgrade_legacy_fonts(str(font_dir)) is None  # 幂等
+
+
+@_needs_extractor
+def test_upgrade_failure_keeps_legacy_fonts(monkeypatch, tmp_path):
+    """全部下载源失败：升级返回 None，旧字体保持可用，目录无残留。"""
+    font_dir = tmp_path / "font"
+    reg, bold = _write_legacy_pair(font_dir)
+
+    def fail_fetch(url, dest, job_dir, **kwargs):
+        raise OSError("mirror down")
+
+    monkeypatch.setattr(font_loader, "_fetch_to_file", fail_fetch)
+    monkeypatch.setattr(font_loader, "build_download_urls", lambda v: ("s-1", "s-2"))
+    monkeypatch.setattr(
+        font_loader, "discover_latest_asset", lambda: ("1.0.42", _record(OK_BYTES))
+    )
+    assert font_loader.upgrade_legacy_fonts(str(font_dir)) is None
+    assert font_loader.init_fonts(str(font_dir)) == (str(reg), str(bold))
+    assert not list(font_dir.glob(".fontjob-*"))
+    assert not (font_dir / INSTALLED_REGULAR).exists()
+
+
+def test_upgrade_skips_custom_and_already_unhinted(monkeypatch, tmp_path):
+    def fail(*a, **k):
+        raise AssertionError("不应触发下载")
+
+    monkeypatch.setattr(font_loader, "download_and_install", fail)
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    (custom / "MyFont-Regular.ttf").write_bytes(b"user")
+    assert font_loader.upgrade_legacy_fonts(str(custom)) is None
+    assert (custom / "MyFont-Regular.ttf").exists()
+
+    done = tmp_path / "done"
+    done.mkdir()
+    (done / INSTALLED_REGULAR).write_bytes(b"r")
+    (done / INSTALLED_BOLD).write_bytes(b"b")
+    assert font_loader.upgrade_legacy_fonts(str(done)) is None
+
+
+def test_unhinted_pair_preferred_and_legacy_cleaned_on_init(tmp_path):
+    reg, bold = _write_legacy_pair(tmp_path)
+    (tmp_path / INSTALLED_REGULAR).write_bytes(b"r")
+    (tmp_path / INSTALLED_BOLD).write_bytes(b"b")
+    assert font_loader.init_fonts(str(tmp_path)) == (
+        str(tmp_path / INSTALLED_REGULAR),
+        str(tmp_path / INSTALLED_BOLD),
+    )
+    assert not reg.exists() and not bold.exists()
+
+
+def test_remove_legacy_never_runs_without_unhinted_pair(tmp_path):
+    reg, bold = _write_legacy_pair(tmp_path)
+    font_loader.remove_legacy_fonts(str(tmp_path))
+    assert reg.exists() and bold.exists(), "新字体未就位时绝不删除旧字体"
