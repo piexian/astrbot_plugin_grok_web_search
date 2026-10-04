@@ -132,6 +132,10 @@ async def grok_search(
         ],
         "temperature": 0.2,
         "stream": stream,
+        "tools": [
+            {"type": "web_search"},
+            {"type": "x_search"},
+        ],
     }
     if model:
         body["model"] = model
@@ -145,7 +149,7 @@ async def grok_search(
     merge_extra_body(
         body,
         extra_body,
-        {"model", "messages", "stream", "reasoning_effort", "reasoning_budget_tokens"},
+        {"model", "messages", "stream", "tools", "reasoning_effort", "reasoning_budget_tokens"},
     )
     headers = build_headers(api_key, extra_headers)
 

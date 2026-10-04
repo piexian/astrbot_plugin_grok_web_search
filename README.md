@@ -33,12 +33,13 @@
 
 | 配置项 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| `model` | string | 否 | 通用模型名称（默认: grok-4.1-fast），作为各搜索模式的回退模型 |
+| `model` | string | 否 | 通用模型名称（默认: grok-4.20-multi-agent-0309），作为各搜索模式的回退模型 |
 | `use_responses_api` | bool | 否 | 使用 xAI Responses API（仅官方 API 支持，非官方端点兼容性不佳） |
 | `quick_model` | string | 否 | 快速搜索模式模型，留空回退到 `model` |
 | `detailed_model` | string | 否 | 详细搜索模式模型，留空回退到 `model` |
 | `deep_model` | string | 否 | 深度搜索模式模型，留空回退到 `model` |
 
+Chat Completions 与 Responses 请求均声明 `web_search` 和 `x_search` 工具；使用 grok2api Console 时可由服务端执行联网检索。
 ### 连接设置
 
 | 配置项 | 类型 | 必填 | 说明 |
