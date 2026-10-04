@@ -100,7 +100,7 @@ HTTP_ERROR_HINTS: dict[int, str] = {
 DEFAULT_RETRYABLE_STATUS_CODES: set[int] = {429, 500, 502, 503, 504}
 
 # 默认模型名（与 _conf_schema.json 保持一致）
-DEFAULT_MODEL = "grok-4.1-fast"
+DEFAULT_MODEL = "grok-4.20-multi-agent-0309"
 
 
 # ─── 工具函数 ─────────────────────────────────────────────

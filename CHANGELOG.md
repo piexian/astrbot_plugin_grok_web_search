@@ -2,6 +2,13 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.6.5] - 2026-10-04
+
+### Changed
+
+- 默认模型改为 `grok-4.20-multi-agent-0309`。
+- Chat Completions 请求同步声明 `web_search` 和 `x_search` 工具，适配 grok2api Console 联网搜索。
+
 ## [1.6.4] - 2026-10-03
 
 ### Added

@@ -7,8 +7,8 @@
       "model": {
         "type": "string",
         "description": "模型名称",
-        "hint": "选择要使用的 Grok 模型",
-        "default": "grok-4.1-fast"
+        "hint": "默认使用 grok2api Console 多智能体模型",
+        "default": "grok-4.20-multi-agent-0309"
       },
       "use_responses_api": {
         "type": "bool",
@@ -246,7 +246,7 @@
   },
   "model": {
     "type": "string",
-    "default": "grok-4.1-fast",
+    "default": "grok-4.20-multi-agent-0309",
     "invisible": true
   },
   "use_responses_api": {

@@ -176,9 +176,14 @@ def test_search_still_parses_json_and_selects_prompt(monkeypatch, custom):
     assert result["content"] == "Answer"
     assert len(result["sources"]) == 1
     assert result["raw"] == ""
-    assert calls[0][1]["json"]["messages"][0]["content"] == (
+    request_body = calls[0][1]["json"]
+    assert request_body["messages"][0]["content"] == (
         custom if custom is not None else tool.DEFAULT_JSON_SYSTEM_PROMPT
     )
+    assert request_body["tools"] == [
+        {"type": "web_search"},
+        {"type": "x_search"},
+    ]
 
 
 @pytest.mark.parametrize("custom", [None, "Custom rules"])
