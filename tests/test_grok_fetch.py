@@ -185,6 +185,7 @@ def test_search_still_parses_json_and_selects_prompt(monkeypatch, custom):
         {"type": "x_search"},
     ]
 
+
 @pytest.mark.parametrize("custom", [None, "Custom rules"])
 def test_responses_search_uses_shared_prompt(monkeypatch, custom):
     responses = load("api.grok_responses")

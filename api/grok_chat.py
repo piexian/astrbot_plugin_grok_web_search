@@ -149,7 +149,14 @@ async def grok_search(
     merge_extra_body(
         body,
         extra_body,
-        {"model", "messages", "stream", "tools", "reasoning_effort", "reasoning_budget_tokens"},
+        {
+            "model",
+            "messages",
+            "stream",
+            "tools",
+            "reasoning_effort",
+            "reasoning_budget_tokens",
+        },
     )
     headers = build_headers(api_key, extra_headers)
 
