@@ -9,8 +9,13 @@ tool = load("tool.tool")
 def test_config_paths_match_schema_groups():
     assert config_mod.CONFIG_PATHS["base_url"] == ("connection_settings", "base_url")
     assert config_mod.CONFIG_PATHS["extra_body"] == ("advanced_settings", "extra_body")
+    assert config_mod.CONFIG_PATHS["enable_x_search"] == (
+        "request_settings",
+        "enable_x_search",
+    )
     assert config_mod.CONFIG_DEFAULTS["timeout_seconds"] == 60
     assert config_mod.CONFIG_DEFAULTS["model"] == tool.DEFAULT_MODEL
+    assert config_mod.CONFIG_DEFAULTS["enable_x_search"] is False
 
 
 def test_config_value_grouped_flat_and_default():

@@ -180,7 +180,23 @@ def test_search_still_parses_json_and_selects_prompt(monkeypatch, custom):
     assert request_body["messages"][0]["content"] == (
         custom if custom is not None else tool.DEFAULT_JSON_SYSTEM_PROMPT
     )
-    assert request_body["tools"] == [
+    assert request_body["tools"] == [{"type": "web_search"}]
+    assert "x_search" not in request_body["tools"]
+
+
+def test_chat_search_can_enable_x_search(monkeypatch):
+    message = json.dumps({"content": "Answer", "sources": []})
+    calls = _mock_http(monkeypatch, message)
+    result = asyncio.run(
+        chat.grok_search(
+            "Question",
+            "https://example.invalid",
+            "test-fixture",
+            enable_x_search=True,
+        )
+    )
+    assert result["ok"] is True
+    assert calls[0][1]["json"]["tools"] == [
         {"type": "web_search"},
         {"type": "x_search"},
     ]
@@ -210,9 +226,43 @@ def test_responses_search_uses_shared_prompt(monkeypatch, custom):
         )
     )
     assert result["ok"] is True and result["content"] == "Answer"
-    assert calls[0][1]["json"]["input"][0]["content"] == (
+    request_body = calls[0][1]["json"]
+    assert request_body["input"][0]["content"] == (
         custom if custom is not None else tool.DEFAULT_JSON_SYSTEM_PROMPT
     )
+    assert request_body["tools"] == [{"type": "web_search"}]
+    assert "x_search" not in request_body["tools"]
+
+
+def test_responses_search_can_enable_x_search(monkeypatch):
+    responses = load("api.grok_responses")
+    calls = []
+    payload = {
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": '{"content":"Answer"}'}],
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        responses.aiohttp,
+        "ClientSession",
+        lambda: _Session(_Response(json.dumps(payload)), calls),
+    )
+    result = asyncio.run(
+        responses.grok_responses_search(
+            "Question",
+            "https://example.invalid",
+            "test-fixture",
+            enable_x_search=True,
+        )
+    )
+    assert result["ok"] is True
+    assert calls[0][1]["json"]["tools"] == [
+        {"type": "web_search"},
+        {"type": "x_search"},
+    ]
 
 
 def test_responses_duplicate_citations_collapse_to_single_source(monkeypatch):

@@ -63,11 +63,12 @@ async def grok_responses_search(
     retryable_status_codes: set[int] | None = None,
     images: list[str] | None = None,
     proxy: str | None = None,
+    enable_x_search: bool = False,
 ) -> dict[str, Any]:
     """
     通过 xAI Responses API 进行联网搜索（异步）
 
-    使用 /v1/responses 端点，支持 web_search 和 x_search 工具。
+    使用 /v1/responses 端点，始终启用 web_search；按配置可选附加 x_search。
     仅适用于直连 xAI 官方 API 的场景。
 
     Args:
@@ -84,6 +85,7 @@ async def grok_responses_search(
         retryable_status_codes: 可重试的 HTTP 状态码集合
         images: 可选的 base64 编码图片列表
         proxy: HTTP 代理地址
+        enable_x_search: 是否附加 x_search 工具
 
     Returns:
         {
@@ -129,10 +131,8 @@ async def grok_responses_search(
             {"role": "system", "content": final_system_prompt},
             {"role": "user", "content": user_input},
         ],
-        "tools": [
-            {"type": "web_search"},
-            {"type": "x_search"},
-        ],
+        "tools": [{"type": "web_search"}]
+        + ([{"type": "x_search"}] if enable_x_search else []),
     }
 
     merge_extra_body(body, extra_body, {"model", "input", "tools", "stream"})

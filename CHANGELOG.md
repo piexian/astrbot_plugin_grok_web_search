@@ -2,6 +2,13 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.6.6] - 2026-10-05
+
+### Fixed
+
+- 修复 Grok Web 不支持 `x_search` 导致的 400 请求错误。
+- 新增 `enable_x_search` 请求设置，默认关闭；开启后才附加 `x_search` 工具。
+
 ## [1.6.5] - 2026-10-04
 
 ### Changed
