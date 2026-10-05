@@ -86,10 +86,18 @@ from .tool.tool import (
 
 
 def _image_input_values(image_urls: object) -> list[str]:
-    """Normalize tool image arguments without dropping local or data URLs."""
+    """Normalize references without splitting the comma inside a Data URI."""
     if isinstance(image_urls, str):
-        return [item.strip() for item in image_urls.split(",") if item.strip()]
-    if isinstance(image_urls, (list, tuple, set)):
+        chunks = iter(image_urls.split(","))
+        values = []
+        for chunk in chunks:
+            value = chunk.strip()
+            if value.startswith("data:image/"):
+                value += "," + next(chunks, "").strip()
+            if value:
+                values.append(value)
+        return values
+    if isinstance(image_urls, (list, tuple)):
         return [
             item.strip()
             for item in image_urls
@@ -652,6 +660,7 @@ class GrokSearchPlugin(Star):
         轻量降级为纯文本，避免在不渲染 Markdown 的渠道显示裸标记。
         文本模式保持 False，不对纯文本 content 做任何剥离，防止误伤。
         """
+
         if not result.get("ok"):
             error = result.get("error", "未知错误")
             return f"搜索失败: {error}"

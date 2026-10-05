@@ -38,16 +38,15 @@ def resolve_model(get_cfg: ConfigGetter, mode: str, explicit_model: str = "") ->
 
 def resolve_retry_params(
     get_cfg: ConfigGetter, use_retry: bool
-) -> tuple[int, float, set[int] | None, int]:
-    """解析 HTTP 与空响应重试参数；两类入口均允许有限空响应重试。"""
-    max_retries = get_cfg("max_retries", 3) if use_retry else 0
-    empty_retries = get_cfg("empty_response_retries", 1)
+) -> tuple[int, float, set[int] | None]:
+    """空响应与 HTTP/网络错误共用次数；后两类仍由入口控制。"""
+    max_retries = max(0, int(get_cfg("max_retries", 3) or 0))
     retry_delay = get_cfg("retry_delay", 1.0)
     retryable: set[int] | None = None
     codes = get_cfg("retryable_status_codes", [])
     if codes and isinstance(codes, list):
         retryable = set(codes)
-    return max_retries, retry_delay, retryable, max(0, int(empty_retries or 0))
+    return max_retries, retry_delay, retryable
 
 
 def _load_api():
@@ -94,9 +93,7 @@ async def execute_search(
     )
     model = resolve_model(get_cfg, resolve_search_mode(depth), explicit_model)
     reasoning_effort, reasoning_budget_tokens = resolve_reasoning_params(depth)
-    max_retries, retry_delay, retryable_codes, empty_response_retries = (
-        resolve_retry_params(get_cfg, use_retry)
-    )
+    max_retries, retry_delay, retryable_codes = resolve_retry_params(get_cfg, use_retry)
     if system_prompt is None:
         system_prompt = resolve_system_prompt(
             get_cfg("custom_system_prompt", ""), DEFAULT_JSON_SYSTEM_PROMPT
@@ -132,7 +129,7 @@ async def execute_search(
         "extra_headers": extra_headers,
         "system_prompt": system_prompt,
         "max_retries": max_retries,
-        "empty_response_retries": empty_response_retries,
+        "retry_http": use_retry,
         "retry_delay": retry_delay,
         "retryable_status_codes": retryable_codes,
         "images": images,

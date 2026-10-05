@@ -76,6 +76,8 @@ def is_retryable_empty_response(data: Any) -> bool:
             "prohibited_content",
             "content_filter",
             "refusal",
+            "tool_calls",
+            "function_call",
         }:
             return False
         if not choices or not isinstance(choices[0], dict):
@@ -88,12 +90,25 @@ def is_retryable_empty_response(data: Any) -> bool:
     output = data.get("output")
     if isinstance(output, list):
         for item in output:
-            if not isinstance(item, dict) or item.get("type") != "message":
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") in {"function_call", "computer_call"}:
+                return False
+            if item.get("type") != "message":
                 continue
             for part in item.get("content", []):
-                if isinstance(part, dict) and part.get("type") == "output_text":
-                    if str(part.get("text") or "").strip():
-                        return False
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") in {"refusal", "output_refusal"}:
+                    return False
+                if (
+                    part.get("type") == "output_text"
+                    and str(part.get("text") or "").strip()
+                ):
+                    return False
+        incomplete_reason = str(data.get("incomplete_details", {}).get("reason") or "")
+        if incomplete_reason in {"prohibited_content", "content_filter", "refusal"}:
+            return False
         return True
     return False
 
@@ -1038,72 +1053,55 @@ async def retry_request(
     retryable_status_codes: set[int] | None,
     timeout: float,
     started: float,
-    empty_response_retries: int = 0,
+    retry_http: bool = True,
     is_retryable_empty: Callable[[dict[str, Any]], bool] | None = None,
 ) -> dict[str, Any]:
-    """执行 HTTP、网络异常和可选空响应重试。"""
+    """空响应、HTTP 和网络错误共用总重试预算。"""
     if retryable_status_codes is None:
         retryable_status_codes = DEFAULT_RETRYABLE_STATUS_CODES
-
-    result = None
-    last_error = None
     retry_count = 0
-    http_retry_count = 0
-    empty_retry_count = 0
-    max_attempts = max_retries + empty_response_retries + 1
-
-    for _ in range(max_attempts):
+    for attempt in range(max_retries + 1):
         try:
             result = await do_request(proxy)
-            if result.get("ok"):
-                if (
-                    is_retryable_empty is not None
-                    and empty_retry_count < empty_response_retries
-                    and is_retryable_empty(result)
-                ):
-                    empty_retry_count += 1
-                    retry_count += 1
-                    await asyncio.sleep(retry_delay * empty_retry_count)
-                    continue
+            empty = (
+                is_retryable_empty is not None
+                and (result.get("ok") or result.get("error_kind") == "empty")
+                and is_retryable_empty(result)
+            )
+            if result.get("ok") and not empty:
                 break
-
             status = result.get("status")
             if isinstance(status, int):
-                should_retry = status in retryable_status_codes
+                should_retry = (
+                    retry_http
+                    and status not in {400, 401, 403}
+                    and status in retryable_status_codes
+                )
             else:
                 error_msg = result.get("error", "")
-                should_retry = any(
-                    f"HTTP {code}" in error_msg for code in retryable_status_codes
+                should_retry = retry_http and any(
+                    f"HTTP {code}" in error_msg
+                    for code in retryable_status_codes
+                    if code not in {400, 401, 403}
                 )
-            if should_retry and http_retry_count < max_retries:
-                http_retry_count += 1
-                retry_count += 1
-                wait_time = result.get("retry_after_seconds")
-                if wait_time is None or not isinstance(wait_time, (int, float)):
-                    wait_time = retry_delay * http_retry_count
-                await asyncio.sleep(wait_time)
-                continue
-            break
+            if not (empty or should_retry) or attempt == max_retries:
+                break
+            wait_time = result.get("retry_after_seconds") if not empty else None
+            if wait_time is None or not isinstance(wait_time, (int, float)):
+                wait_time = retry_delay * (attempt + 1)
         except aiohttp.ClientError as e:
-            last_error = f"网络请求失败: {e}"
-            if http_retry_count < max_retries:
-                http_retry_count += 1
-                retry_count += 1
-                await asyncio.sleep(retry_delay * http_retry_count)
-                continue
-            return make_error_result(last_error, started, retry_count)
+            if not retry_http or attempt == max_retries:
+                return make_error_result(f"网络请求失败: {e}", started, retry_count)
+            wait_time = retry_delay * (attempt + 1)
         except TimeoutError:
-            last_error = (
-                f"请求超时（{timeout}秒），请检查网络或增加 timeout_seconds 配置"
-            )
-            if http_retry_count < max_retries:
-                http_retry_count += 1
-                retry_count += 1
-                await asyncio.sleep(retry_delay * http_retry_count)
-                continue
-            return make_error_result(last_error, started, retry_count)
-
-    if result is None:
-        return make_error_result(last_error or "未知错误", started, retry_count)
+            if not retry_http or attempt == max_retries:
+                return make_error_result(
+                    f"请求超时（{timeout}秒），请检查网络或增加 timeout_seconds 配置",
+                    started,
+                    retry_count,
+                )
+            wait_time = retry_delay * (attempt + 1)
+        retry_count += 1
+        await asyncio.sleep(wait_time)
     result["retries"] = retry_count
     return result

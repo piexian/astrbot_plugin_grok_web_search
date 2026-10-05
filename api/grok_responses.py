@@ -63,10 +63,10 @@ async def grok_responses_search(
     max_retries: int = 3,
     retry_delay: float = 1.0,
     retryable_status_codes: set[int] | None = None,
-    empty_response_retries: int = 1,
     images: list[str] | None = None,
     proxy: str | None = None,
     enable_x_search: bool = False,
+    retry_http: bool = True,
 ) -> dict[str, Any]:
     """
     通过 xAI Responses API 进行联网搜索（异步）
@@ -158,6 +158,10 @@ async def grok_responses_search(
                     )
 
                 raw_text = await resp.text()
+                if not raw_text.strip():
+                    return make_error_result(
+                        "API 返回了空响应，请稍后重试", started, kind="empty"
+                    )
 
                 try:
                     data = json.loads(raw_text)
@@ -178,7 +182,7 @@ async def grok_responses_search(
             retryable_status_codes=retryable_status_codes,
             timeout=timeout,
             started=started,
-            empty_response_retries=empty_response_retries,
+            retry_http=retry_http,
             is_retryable_empty=lambda item: is_retryable_empty_response(
                 item.get("data")
             ),
@@ -251,13 +255,13 @@ async def grok_responses_search(
                         if not any(c.get("url") == url_str for c in citations):
                             citations.append({"url": url_str, "title": ""})
 
-        if not message:
+        if not str(message).strip():
             parse_error = parse_error or "API 返回了空响应"
 
     except (KeyError, IndexError, TypeError) as e:
         parse_error = f"响应结构解析失败: {type(e).__name__}: {e}"
 
-    if not message:
+    if not str(message).strip():
         error_detail = parse_error or "API 返回了空响应"
         return make_error_result(
             f"{error_detail}，请稍后重试",

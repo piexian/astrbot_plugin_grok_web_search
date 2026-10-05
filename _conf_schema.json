@@ -116,17 +116,6 @@
           504
         ]
       },
-      "empty_response_retries": {
-        "type": "int",
-        "description": "空响应重试次数",
-        "hint": "HTTP 200 但正文为空时的有限重试次数；明确拒答和 HTTP 错误不受此项影响",
-        "default": 1,
-        "slider": {
-          "min": 0,
-          "max": 3,
-          "step": 1
-        }
-      },
       "custom_system_prompt": {
         "type": "text",
         "description": "自定义系统提示词",
@@ -335,11 +324,6 @@
       503,
       504
     ],
-    "invisible": true
-  },
-  "empty_response_retries": {
-    "type": "int",
-    "default": 1,
     "invisible": true
   },
   "custom_system_prompt": {

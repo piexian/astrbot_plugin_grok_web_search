@@ -92,9 +92,8 @@ def test_chat_empty_response_retries_then_succeeds(monkeypatch):
             "Question",
             "https://example.invalid",
             "test-fixture",
-            max_retries=0,
+            max_retries=1,
             retry_delay=0,
-            empty_response_retries=1,
         )
     )
     assert result["ok"] is True
@@ -135,7 +134,6 @@ def test_chat_prohibited_empty_response_does_not_retry(monkeypatch):
             "test-fixture",
             max_retries=0,
             retry_delay=0,
-            empty_response_retries=1,
         )
     )
     assert result["ok"] is False

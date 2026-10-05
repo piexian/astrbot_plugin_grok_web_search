@@ -59,7 +59,6 @@ Chat Completions 与 Responses 请求始终声明 `web_search`；`enable_x_searc
 | `max_retries` | int | 否 | 最大重试次数（默认: 3） |
 | `retry_delay` | float | 否 | 重试间隔时间（默认: 1 秒），429 时优先使用 Retry-After 头 |
 | `retryable_status_codes` | list | 否 | 可重试的 HTTP 状态码（默认: [429, 500, 502, 503, 504]） |
-| `empty_response_retries` | int | 否 | HTTP 200 但正文为空时的有限重试次数（默认: 1）；明确拒答和 HTTP 错误不受影响 |
 | `custom_system_prompt` | text | 否 | 替换指令、LLM Tool 和 Skill 的搜索提示词；留空按输出目标选内置规则。建议保留 `content` / `sources` JSON 格式；网页抓取使用独立提示词 |
 
 ### 输出设置
@@ -171,8 +170,9 @@ Chat Completions 与 Responses 请求始终声明 `web_search`；`enable_x_searc
 ### 重试机制
 
 - `/grok` 指令启用自动重试，429 时优先使用服务端 `Retry-After` 头指定的等待时间，其他错误使用线性退避
-- LLM Tool 与 Skill 不自动重试，失败立即返回，由 AI 自行决定是否重新调用
-- 重试通过 `retryable_status_codes` 匹配状态码，网络异常与超时同样计入重试
+- LLM Tool 与 Skill 只对空响应使用共享 `max_retries` 预算；HTTP / 网络错误仍不自动重试
+- `/grok` 的 HTTP / 网络错误与空响应共用 `max_retries` 预算；HTTP 200 空正文可重试，明确拒答、HTTP 400、401、403 不重试
+- HTTP 重试仍通过 `retryable_status_codes` 匹配状态码，网络异常与超时同样计入指令路径重试
 
 ### LLM Tool
 
