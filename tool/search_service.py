@@ -39,10 +39,8 @@ def resolve_model(get_cfg: ConfigGetter, mode: str, explicit_model: str = "") ->
 def resolve_retry_params(
     get_cfg: ConfigGetter, use_retry: bool
 ) -> tuple[int, float, set[int] | None]:
-    """重试参数：仅 /grok 指令启用；LLM Tool 与 Skill 默认不自动重试。"""
-    if not use_retry:
-        return 0, 1.0, None
-    max_retries = get_cfg("max_retries", 3)
+    """空响应与 HTTP/网络错误共用次数；后两类仍由入口控制。"""
+    max_retries = max(0, int(get_cfg("max_retries", 3) or 0))
     retry_delay = get_cfg("retry_delay", 1.0)
     retryable: set[int] | None = None
     codes = get_cfg("retryable_status_codes", [])
@@ -131,6 +129,7 @@ async def execute_search(
         "extra_headers": extra_headers,
         "system_prompt": system_prompt,
         "max_retries": max_retries,
+        "retry_http": use_retry,
         "retry_delay": retry_delay,
         "retryable_status_codes": retryable_codes,
         "images": images,

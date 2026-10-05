@@ -206,7 +206,7 @@ def test_plugin_http_prompt_and_guide_wiring(responses, custom, monkeypatch):
         custom, tool.DEFAULT_JSON_SYSTEM_PROMPT
     )
     assert kwargs["query"] == tool.build_search_query("Question", "deep", 9, "")
-    assert kwargs["max_retries"] == 0  # LLM Tool 路径不自动重试
+    assert kwargs["max_retries"] == 3  # shared budget remains configured
     assert kwargs["enable_x_search"] is True
 
 
@@ -234,7 +234,7 @@ def test_execute_search_model_and_retry_params(monkeypatch):
         )
     )
     assert chat.call_args.kwargs["model"] == "cli-x"
-    assert chat.call_args.kwargs["max_retries"] == 0
+    assert chat.call_args.kwargs["max_retries"] == 5
 
     asyncio.run(service.execute_search(get_cfg, "Q", search_depth="basic"))
     assert chat.call_args.kwargs["model"] == "quick-x"  # 模式模型优先于全局

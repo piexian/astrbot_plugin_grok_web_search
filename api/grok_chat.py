@@ -20,6 +20,7 @@ try:  # 插件包上下文（相对导入）
         build_user_content,
         format_http_error,
         get_local_time_info,
+        is_retryable_empty_response,
         make_error_result,
         merge_extra_body,
         normalize_base_url,
@@ -38,6 +39,7 @@ except ImportError:  # Skill 安装态的顶层包上下文
         build_user_content,
         format_http_error,
         get_local_time_info,
+        is_retryable_empty_response,
         make_error_result,
         merge_extra_body,
         normalize_base_url,
@@ -67,6 +69,7 @@ async def grok_search(
     images: list[str] | None = None,
     proxy: str | None = None,
     parse_json_response: bool = True,
+    retry_http: bool = True,
 ) -> dict[str, Any]:
     """
     调用 Grok API 进行联网搜索（异步）
@@ -184,6 +187,9 @@ async def grok_search(
         merged_content = ""
         model_name = ""
         usage_info = {}
+        finish_reason = ""
+        has_refusal = False
+        has_tool_calls = False
 
         for chunk in chunks:
             if not model_name:
@@ -194,14 +200,26 @@ async def grok_search(
             choices = chunk.get("choices", [])
             if choices and isinstance(choices, list):
                 choice = choices[0]
+                finish_reason = str(choice.get("finish_reason") or finish_reason)
                 delta = choice.get("delta", {})
                 if delta and isinstance(delta, dict):
                     content = delta.get("content", "")
                     if content:
                         merged_content += content
+                    has_refusal = has_refusal or bool(delta.get("refusal"))
+                    has_tool_calls = has_tool_calls or bool(delta.get("tool_calls"))
 
         return {
-            "choices": [{"message": {"content": merged_content}}],
+            "choices": [
+                {
+                    "message": {
+                        "content": merged_content,
+                        **({"refusal": True} if has_refusal else {}),
+                        **({"tool_calls": [{}]} if has_tool_calls else {}),
+                    },
+                    "finish_reason": finish_reason,
+                }
+            ],
             "model": model_name,
             "usage": usage_info,
         }
@@ -223,6 +241,10 @@ async def grok_search(
                     )
 
                 raw_text = await resp.text()
+                if not raw_text.strip():
+                    return make_error_result(
+                        "API 返回了空响应，请稍后重试", started, kind="empty"
+                    )
                 content_type = resp.headers.get("Content-Type", "")
 
                 # 检查是否为 SSE 流式响应
@@ -259,6 +281,10 @@ async def grok_search(
             retryable_status_codes=retryable_status_codes,
             timeout=timeout,
             started=started,
+            retry_http=retry_http,
+            is_retryable_empty=lambda item: is_retryable_empty_response(
+                item.get("data")
+            ),
         )
 
     if not result.get("ok") or "data" not in result:
@@ -292,12 +318,12 @@ async def grok_search(
             choice0 = choices[0] if choices else {}
             msg = choice0.get("message") or {}
             message = msg.get("content") or ""
-            if not message:
+            if not str(message).strip():
                 parse_error = "choices[0].message.content 为空"
     except (KeyError, IndexError, TypeError) as e:
         parse_error = f"响应结构解析失败: {type(e).__name__}: {e}"
 
-    if not message:
+    if not str(message).strip():
         error_detail = parse_error or "API 返回了空响应"
         return make_error_result(
             f"{error_detail}，请稍后重试",

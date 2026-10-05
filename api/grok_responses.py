@@ -22,6 +22,7 @@ try:  # 插件包上下文（相对导入）
         build_user_content,
         format_http_error,
         get_local_time_info,
+        is_retryable_empty_response,
         make_error_result,
         merge_citations_into_sources,
         merge_extra_body,
@@ -39,6 +40,7 @@ except ImportError:  # Skill 安装态的顶层包上下文
         build_user_content,
         format_http_error,
         get_local_time_info,
+        is_retryable_empty_response,
         make_error_result,
         merge_citations_into_sources,
         merge_extra_body,
@@ -64,6 +66,7 @@ async def grok_responses_search(
     images: list[str] | None = None,
     proxy: str | None = None,
     enable_x_search: bool = False,
+    retry_http: bool = True,
 ) -> dict[str, Any]:
     """
     通过 xAI Responses API 进行联网搜索（异步）
@@ -155,6 +158,10 @@ async def grok_responses_search(
                     )
 
                 raw_text = await resp.text()
+                if not raw_text.strip():
+                    return make_error_result(
+                        "API 返回了空响应，请稍后重试", started, kind="empty"
+                    )
 
                 try:
                     data = json.loads(raw_text)
@@ -175,6 +182,10 @@ async def grok_responses_search(
             retryable_status_codes=retryable_status_codes,
             timeout=timeout,
             started=started,
+            retry_http=retry_http,
+            is_retryable_empty=lambda item: is_retryable_empty_response(
+                item.get("data")
+            ),
         )
 
     if not result.get("ok") or "data" not in result:
@@ -244,13 +255,13 @@ async def grok_responses_search(
                         if not any(c.get("url") == url_str for c in citations):
                             citations.append({"url": url_str, "title": ""})
 
-        if not message:
+        if not str(message).strip():
             parse_error = parse_error or "API 返回了空响应"
 
     except (KeyError, IndexError, TypeError) as e:
         parse_error = f"响应结构解析失败: {type(e).__name__}: {e}"
 
-    if not message:
+    if not str(message).strip():
         error_detail = parse_error or "API 返回了空响应"
         return make_error_result(
             f"{error_detail}，请稍后重试",
