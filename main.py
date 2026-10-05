@@ -8,6 +8,7 @@ AstrBot 插件：Grok 联网搜索
 """
 
 import asyncio
+import base64
 import contextlib
 import os
 import tempfile
@@ -82,6 +83,36 @@ from .tool.tool import (
     safe_number,
     set_default_headers,
 )
+
+
+def _image_input_values(image_urls: object) -> list[str]:
+    """Normalize tool image arguments without dropping local or data URLs."""
+    if isinstance(image_urls, str):
+        return [item.strip() for item in image_urls.split(",") if item.strip()]
+    if isinstance(image_urls, (list, tuple, set)):
+        return [
+            item.strip()
+            for item in image_urls
+            if isinstance(item, str) and item.strip()
+        ]
+    return []
+
+
+def _decode_data_image(value: str) -> str | None:
+    """Decode a base64/data image URI into the shared base64 representation."""
+    if value.startswith("base64://"):
+        return value.removeprefix("base64://") or None
+    if not value.startswith("data:image/") or "," not in value:
+        return None
+    header, payload = value.split(",", 1)
+    if ";base64" not in header:
+        return None
+    try:
+        base64.b64decode(payload, validate=True)
+    except (ValueError, TypeError):
+        return None
+    return payload
+
 
 PLUGIN_NAME = "astrbot_plugin_grok_web_search"
 FORWARD_SENDER_NAME = "Grok搜索助手"
@@ -997,26 +1028,36 @@ class GrokSearchPlugin(Star):
         images: list[str] = []
 
         # 1. 解析 LLM 传入的 image_urls
-        if image_urls and isinstance(image_urls, str):
-            for url in image_urls.split(","):
-                url = url.strip()
-                if not url:
-                    continue
-                if url.startswith("base64://"):
-                    images.append(url.removeprefix("base64://"))
-                elif url.startswith("http"):
-                    # 下载并转为 base64
-                    try:
-                        file_path = await download_image_by_url(url)
-                        b64 = file_to_base64(file_path)
-                        b64 = b64.removeprefix("base64://")
-                        if b64:
-                            images.append(b64)
-                    except Exception as e:
-                        logger.warning(
-                            f"[{PLUGIN_NAME}] Failed to download image from URL {url}: {e}"
-                        )
-
+        if image_urls:
+            image_refs = _image_input_values(image_urls)
+        else:
+            image_refs = []
+        for image_ref in image_refs:
+            b64 = _decode_data_image(image_ref)
+            if b64:
+                images.append(b64)
+                continue
+            if image_ref.startswith(("http://", "https://")):
+                try:
+                    file_path = await download_image_by_url(image_ref)
+                    b64 = file_to_base64(file_path).removeprefix("base64://")
+                    if b64:
+                        images.append(b64)
+                except Exception as e:
+                    logger.warning(
+                        f"[{PLUGIN_NAME}] Failed to download image input: {type(e).__name__}: {e}"
+                    )
+                continue
+            try:
+                path = Path(image_ref)
+                if path.is_file():
+                    b64 = file_to_base64(str(path)).removeprefix("base64://")
+                    if b64:
+                        images.append(b64)
+            except OSError as e:
+                logger.warning(
+                    f"[{PLUGIN_NAME}] Failed to read image input: {type(e).__name__}: {e}"
+                )
         # 2. 从用户消息事件中自动提取内容
         extra_text, event_images = await self._extract_content_from_event(event)
         images.extend(event_images)

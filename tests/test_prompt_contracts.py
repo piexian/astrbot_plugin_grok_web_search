@@ -223,6 +223,7 @@ def test_execute_search_model_and_retry_params(monkeypatch):
         "max_retries": 5,
         "retry_delay": 0.5,
         "retryable_status_codes": [429, 500],
+        "empty_response_retries": 2,
     }
 
     def get_cfg(key, default=None):
@@ -245,6 +246,7 @@ def test_execute_search_model_and_retry_params(monkeypatch):
     assert chat.call_args.kwargs["max_retries"] == 5
     assert chat.call_args.kwargs["retry_delay"] == 0.5
     assert chat.call_args.kwargs["retryable_status_codes"] == {429, 500}
+    assert chat.call_args.kwargs["empty_response_retries"] == 2
     assert chat.call_args.kwargs["reasoning_effort"] is None
 
     asyncio.run(service.execute_search(get_cfg, "Q", search_depth="deep"))

@@ -8,6 +8,7 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -40,6 +41,62 @@ _JSON_RESULT_RULE = (
     "proper nouns. Do not append runtime metadata such as serving-model labels, timing, "
     "token counts or stream decorations. "
 )
+
+
+def _response_retry_metadata(data: Any) -> dict[str, Any]:
+    """Return safe metadata used to decide whether an empty response is retryable."""
+    metadata: dict[str, Any] = {
+        "finish_reason": "",
+        "has_refusal": False,
+        "has_tool_calls": False,
+    }
+    if not isinstance(data, dict):
+        return metadata
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        choice = choices[0]
+        metadata["finish_reason"] = str(choice.get("finish_reason") or "")
+        message = choice.get("message")
+        if isinstance(message, dict):
+            metadata["has_refusal"] = bool(message.get("refusal"))
+            metadata["has_tool_calls"] = bool(message.get("tool_calls"))
+    return metadata
+
+
+def is_retryable_empty_response(data: Any) -> bool:
+    """Return whether a successful API response has no final usable text."""
+    if not isinstance(data, dict):
+        return True
+    choices = data.get("choices")
+    if isinstance(choices, list):
+        metadata = _response_retry_metadata(data)
+        if metadata["has_refusal"] or metadata["has_tool_calls"]:
+            return False
+        if metadata["finish_reason"].lower() in {
+            "prohibited_content",
+            "content_filter",
+            "refusal",
+        }:
+            return False
+        if not choices or not isinstance(choices[0], dict):
+            return True
+        message = choices[0].get("message")
+        return (
+            not isinstance(message, dict)
+            or not str(message.get("content") or "").strip()
+        )
+    output = data.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            for part in item.get("content", []):
+                if isinstance(part, dict) and part.get("type") == "output_text":
+                    if str(part.get("text") or "").strip():
+                        return False
+        return True
+    return False
+
 
 # 搜索证据规则共用，输出要求按调用方区分。
 DEFAULT_JSON_SYSTEM_PROMPT = (
@@ -981,36 +1038,35 @@ async def retry_request(
     retryable_status_codes: set[int] | None,
     timeout: float,
     started: float,
+    empty_response_retries: int = 0,
+    is_retryable_empty: Callable[[dict[str, Any]], bool] | None = None,
 ) -> dict[str, Any]:
-    """通用的带重试的请求执行器。
-
-    Args:
-        do_request: async callable(proxy) -> dict
-        proxy: HTTP 代理
-        max_retries: 最大重试次数
-        retry_delay: 重试基础间隔
-        retryable_status_codes: 可重试的 HTTP 状态码
-        timeout: 超时秒数（用于错误消息）
-        started: 起始 time.time()
-
-    Returns:
-        包含 ok/data/error 等字段的字典
-    """
+    """执行 HTTP、网络异常和可选空响应重试。"""
     if retryable_status_codes is None:
         retryable_status_codes = DEFAULT_RETRYABLE_STATUS_CODES
 
     result = None
     last_error = None
     retry_count = 0
+    http_retry_count = 0
+    empty_retry_count = 0
+    max_attempts = max_retries + empty_response_retries + 1
 
-    for attempt in range(max_retries + 1):
+    for _ in range(max_attempts):
         try:
             result = await do_request(proxy)
-
             if result.get("ok"):
+                if (
+                    is_retryable_empty is not None
+                    and empty_retry_count < empty_response_retries
+                    and is_retryable_empty(result)
+                ):
+                    empty_retry_count += 1
+                    retry_count += 1
+                    await asyncio.sleep(retry_delay * empty_retry_count)
+                    continue
                 break
 
-            # 检查是否为可重试的错误：优先看 status 字段，其次回退到字符串包含
             status = result.get("status")
             if isinstance(status, int):
                 should_retry = status in retryable_status_codes
@@ -1019,37 +1075,35 @@ async def retry_request(
                 should_retry = any(
                     f"HTTP {code}" in error_msg for code in retryable_status_codes
                 )
-
-            if should_retry and attempt < max_retries:
-                retry_count = attempt + 1
-                # 优先使用 Retry-After 头指定的等待时间
+            if should_retry and http_retry_count < max_retries:
+                http_retry_count += 1
+                retry_count += 1
                 wait_time = result.get("retry_after_seconds")
                 if wait_time is None or not isinstance(wait_time, (int, float)):
-                    wait_time = retry_delay * (attempt + 1)
+                    wait_time = retry_delay * http_retry_count
                 await asyncio.sleep(wait_time)
                 continue
-
             break
-
         except aiohttp.ClientError as e:
             last_error = f"网络请求失败: {e}"
-            if attempt < max_retries:
-                retry_count = attempt + 1
-                await asyncio.sleep(retry_delay * (attempt + 1))
+            if http_retry_count < max_retries:
+                http_retry_count += 1
+                retry_count += 1
+                await asyncio.sleep(retry_delay * http_retry_count)
                 continue
             return make_error_result(last_error, started, retry_count)
         except TimeoutError:
             last_error = (
                 f"请求超时（{timeout}秒），请检查网络或增加 timeout_seconds 配置"
             )
-            if attempt < max_retries:
-                retry_count = attempt + 1
-                await asyncio.sleep(retry_delay * (attempt + 1))
+            if http_retry_count < max_retries:
+                http_retry_count += 1
+                retry_count += 1
+                await asyncio.sleep(retry_delay * http_retry_count)
                 continue
             return make_error_result(last_error, started, retry_count)
 
     if result is None:
         return make_error_result(last_error or "未知错误", started, retry_count)
-
     result["retries"] = retry_count
     return result

@@ -2,6 +2,13 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.6.7] - 2026-10-05
+
+### Fixed
+
+- HTTP 200 但正文为空时进行有限重试；明确拒答、HTTP 400 和权限错误不重试。
+- LLM Tool 图片输入支持本地路径、Data URI、base64 和列表形式，避免图片参数被静默丢弃。
+- 图片传递与反向搜图参数保持独立，未显式启用 `--serpapi` / `--saucenao` / `--all` 时不自动调用反向搜图。
 ## [1.6.6] - 2026-10-05
 
 ### Fixed

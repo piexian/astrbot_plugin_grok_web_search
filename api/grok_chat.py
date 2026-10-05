@@ -20,6 +20,7 @@ try:  # 插件包上下文（相对导入）
         build_user_content,
         format_http_error,
         get_local_time_info,
+        is_retryable_empty_response,
         make_error_result,
         merge_extra_body,
         normalize_base_url,
@@ -38,6 +39,7 @@ except ImportError:  # Skill 安装态的顶层包上下文
         build_user_content,
         format_http_error,
         get_local_time_info,
+        is_retryable_empty_response,
         make_error_result,
         merge_extra_body,
         normalize_base_url,
@@ -64,6 +66,7 @@ async def grok_search(
     max_retries: int = 3,
     retry_delay: float = 1.0,
     retryable_status_codes: set[int] | None = None,
+    empty_response_retries: int = 1,
     images: list[str] | None = None,
     proxy: str | None = None,
     parse_json_response: bool = True,
@@ -259,6 +262,10 @@ async def grok_search(
             retryable_status_codes=retryable_status_codes,
             timeout=timeout,
             started=started,
+            empty_response_retries=empty_response_retries,
+            is_retryable_empty=lambda item: is_retryable_empty_response(
+                item.get("data")
+            ),
         )
 
     if not result.get("ok") or "data" not in result:

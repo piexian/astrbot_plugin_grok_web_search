@@ -59,6 +59,7 @@ Chat Completions 与 Responses 请求始终声明 `web_search`；`enable_x_searc
 | `max_retries` | int | 否 | 最大重试次数（默认: 3） |
 | `retry_delay` | float | 否 | 重试间隔时间（默认: 1 秒），429 时优先使用 Retry-After 头 |
 | `retryable_status_codes` | list | 否 | 可重试的 HTTP 状态码（默认: [429, 500, 502, 503, 504]） |
+| `empty_response_retries` | int | 否 | HTTP 200 但正文为空时的有限重试次数（默认: 1）；明确拒答和 HTTP 错误不受影响 |
 | `custom_system_prompt` | text | 否 | 替换指令、LLM Tool 和 Skill 的搜索提示词；留空按输出目标选内置规则。建议保留 `content` / `sources` JSON 格式；网页抓取使用独立提示词 |
 
 ### 输出设置
@@ -175,6 +176,7 @@ Chat Completions 与 Responses 请求始终声明 `web_search`；`enable_x_searc
 
 ### LLM Tool
 
+图片输入会独立于反向搜图参数传递给 Grok，支持 WebChat 附件、本地路径、Data URI、base64 和 HTTP/HTTPS 图片；只有显式设置 `use_serpapi` / `use_saucenao` 或 `/grok --all` 时才调用对应反向搜图服务。HTTP 200 但正文为空时会进行有限重试，明确拒答、HTTP 400 和权限错误不会因该设置重试。
 当 LLM 需要搜索实时信息时，会自动调用 `grok_web_search` 工具。如果用户消息中包含图片，工具会自动提取图片进行多模态搜索。LLM 也可以通过 `image_urls` 参数主动传入图片链接。
 
 每次搜索请求会自动注入当前时间上下文（日期、星期、时区），帮助 Grok 更好地处理时效性查询。

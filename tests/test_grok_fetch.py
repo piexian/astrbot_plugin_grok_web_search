@@ -66,6 +66,82 @@ def _mock_http(monkeypatch, message, status=200, stream=False):
     return calls
 
 
+def test_chat_empty_response_retries_then_succeeds(monkeypatch):
+    calls = []
+    payloads = [
+        json.dumps({"choices": [{"message": {"content": ""}}]}),
+        json.dumps(
+            {"choices": [{"message": {"content": '{"content":"ok","sources":[]}'}}]}
+        ),
+    ]
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def post(self, url, **kwargs):
+            calls.append(kwargs)
+            return _Response(payloads[min(len(calls) - 1, 1)])
+
+    monkeypatch.setattr(chat.aiohttp, "ClientSession", lambda: Session())
+    result = asyncio.run(
+        chat.grok_search(
+            "Question",
+            "https://example.invalid",
+            "test-fixture",
+            max_retries=0,
+            retry_delay=0,
+            empty_response_retries=1,
+        )
+    )
+    assert result["ok"] is True
+    assert result["retries"] == 1
+    assert len(calls) == 2
+
+
+def test_chat_prohibited_empty_response_does_not_retry(monkeypatch):
+    calls = []
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def post(self, url, **kwargs):
+            calls.append(kwargs)
+            return _Response(
+                json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "finish_reason": "prohibited_content",
+                                "message": {"content": ""},
+                            }
+                        ]
+                    }
+                )
+            )
+
+    monkeypatch.setattr(chat.aiohttp, "ClientSession", lambda: Session())
+    result = asyncio.run(
+        chat.grok_search(
+            "Question",
+            "https://example.invalid",
+            "test-fixture",
+            max_retries=0,
+            retry_delay=0,
+            empty_response_retries=1,
+        )
+    )
+    assert result["ok"] is False
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize(
     "page",
     [PAGE, '{"content":"this is the page itself"}', "# Article\nOriginal text"],
