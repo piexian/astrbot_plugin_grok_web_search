@@ -39,7 +39,8 @@
 | `detailed_model` | string | 否 | 详细搜索模式模型，留空回退到 `model` |
 | `deep_model` | string | 否 | 深度搜索模式模型，留空回退到 `model` |
 
-Chat Completions 与 Responses 请求均声明 `web_search` 和 `x_search` 工具；使用 grok2api Console 时可由服务端执行联网检索。
+
+Chat Completions 与 Responses 请求始终声明 `web_search`；`enable_x_search` 开启后才附加 `x_search`，使用 grok2api Console 时可由服务端执行对应检索。
 ### 连接设置
 
 | 配置项 | 类型 | 必填 | 说明 |
@@ -54,6 +55,7 @@ Chat Completions 与 Responses 请求均声明 `web_search` 和 `x_search` 工�
 | 配置项 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | `enable_stream` | bool | 否 | 启用 SSE 响应格式并聚合解析最终结果（默认: false） |
+| `enable_x_search` | bool | 否 | 请求中附加 `x_search` 工具；仅适用于支持该工具的端点（默认: false） |
 | `max_retries` | int | 否 | 最大重试次数（默认: 3） |
 | `retry_delay` | float | 否 | 重试间隔时间（默认: 1 秒），429 时优先使用 Retry-After 头 |
 | `retryable_status_codes` | list | 否 | 可重试的 HTTP 状态码（默认: [429, 500, 502, 503, 504]） |

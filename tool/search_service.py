@@ -135,6 +135,7 @@ async def execute_search(
         "retryable_status_codes": retryable_codes,
         "images": images,
         "proxy": str(get_cfg("proxy", "") or "").strip() or None,
+        "enable_x_search": bool(get_cfg("enable_x_search", False)),
     }
 
     if get_cfg("use_responses_api", False):

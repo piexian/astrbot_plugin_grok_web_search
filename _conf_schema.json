@@ -76,6 +76,12 @@
         "hint": "开启后请求 Server-Sent Events 响应并聚合解析为最终结果；消息仍一次性发送",
         "default": false
       },
+      "enable_x_search": {
+        "type": "bool",
+        "description": "启用 X 搜索工具",
+        "hint": "请求中附加 x_search；Grok Web 不支持此工具，默认关闭",
+        "default": false
+      },
       "max_retries": {
         "type": "int",
         "description": "最大重试次数",
@@ -295,6 +301,11 @@
     "invisible": true
   },
   "enable_stream": {
+    "type": "bool",
+    "default": false,
+    "invisible": true
+  },
+  "enable_x_search": {
     "type": "bool",
     "default": false,
     "invisible": true

@@ -187,6 +187,7 @@ def test_plugin_http_prompt_and_guide_wiring(responses, custom, monkeypatch):
         "custom_system_prompt": custom,
         "base_url": "https://example.invalid",
         "api_key": "test-fixture",
+        "enable_x_search": True,
     }
     chat = AsyncMock(return_value={"ok": True})
     resp = AsyncMock(return_value={"ok": True})
@@ -206,6 +207,7 @@ def test_plugin_http_prompt_and_guide_wiring(responses, custom, monkeypatch):
     )
     assert kwargs["query"] == tool.build_search_query("Question", "deep", 9, "")
     assert kwargs["max_retries"] == 0  # LLM Tool 路径不自动重试
+    assert kwargs["enable_x_search"] is True
 
 
 def test_execute_search_model_and_retry_params(monkeypatch):

@@ -59,6 +59,7 @@ async def grok_search(
     extra_body: dict | None = None,
     extra_headers: dict | None = None,
     stream: bool = False,
+    enable_x_search: bool = False,
     system_prompt: str | None = None,
     max_retries: int = 3,
     retry_delay: float = 1.0,
@@ -86,6 +87,7 @@ async def grok_search(
         retryable_status_codes: 可重试的 HTTP 状态码集合，为 None 时使用默认值
         images: 可选的 base64 编码图片列表，用于构建多模态消息
         proxy: HTTP 代理地址
+        enable_x_search: 是否附加 x_search 工具
         parse_json_response: 搜索时解析 JSON；抓取时保留完整 Markdown 正文
 
     Returns:
@@ -132,10 +134,8 @@ async def grok_search(
         ],
         "temperature": 0.2,
         "stream": stream,
-        "tools": [
-            {"type": "web_search"},
-            {"type": "x_search"},
-        ],
+        "tools": [{"type": "web_search"}]
+        + ([{"type": "x_search"}] if enable_x_search else []),
     }
     if model:
         body["model"] = model
